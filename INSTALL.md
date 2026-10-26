@@ -4,8 +4,14 @@ You are a coding agent installing this factory into the user's project. Copy
 what's generic, adapt what's repo-specific, verify it, and report. Work in the
 project's root. Don't clone this repository.
 
-The source is the folder the user pointed you at. On GitHub, read files from
-`https://raw.githubusercontent.com/zazencodes/zazencodes-season-3/main/src/software-factory-claude-code-v2/<path>`.
+The source is the repository the user pointed you at,
+`hasfourF/software-factory-claude-v3`. It may be private, so read its files
+with the signed-in `gh` (the same account that must be able to push to the
+user's project):
+
+```bash
+gh api -H "Accept: application/vnd.github.raw" repos/hasfourF/software-factory-claude-v3/contents/<path>
+```
 
 ## 0. Check the project
 
@@ -46,9 +52,9 @@ factory/dashboard.html
 ```
 
 ```bash
-SRC=https://raw.githubusercontent.com/zazencodes/zazencodes-season-3/main/src/software-factory-claude-code-v2
+SRC=repos/hasfourF/software-factory-claude-v3/contents
 for f in <the paths above>; do
-  mkdir -p "$(dirname "$f")" && curl -fsSL "$SRC/$f" -o "$f"
+  mkdir -p "$(dirname "$f")" && gh api -H "Accept: application/vnd.github.raw" "$SRC/$f" > "$f"
 done
 chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor
 ```
@@ -188,7 +194,7 @@ Then tell the user, in a few lines:
 
 ## Moving from v1
 
-v1 (`../software-factory-claude-code`) keeps a `factory/backlog.md`, merges
+v1 ([zazencodes' original](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code)) keeps a `factory/backlog.md`, merges
 locally and has `/factory approve`. To move a project over, install v2 as above
 (its `.claude/` files replace v1's, so show the user the diff), then:
 

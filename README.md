@@ -14,7 +14,7 @@ Open Claude Code in your project and paste:
 ```text
 Build me a software factory inside this project following the provided reference (below) closely:
 
-https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code-v2
+https://github.com/hasfourF/software-factory-claude-v3
 ```
 
 Your agent reads [`INSTALL.md`](INSTALL.md), copies the skill, agents, scripts
@@ -158,12 +158,12 @@ CHANGELOG.md                  what changed since the version in the video
 The tests need only the standard library: `python3 -m unittest discover -s factory/tests`.
 
 [`DESIGN.md`](DESIGN.md) explains each decision and lists what changed from
-[v1](../software-factory-claude-code).
+[v1](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code).
 
 ## BUILD_PROMPT.md
 
 The prompt from the video that builds v2 on top of
-[v1](../software-factory-claude-code). It's self-contained: paste it into
+[v1](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code). It's self-contained: paste it into
 Claude Code in a GitHub repo and it builds the factory from v1's code. It
 produces the factory as it was in the video; plan review, the safety limits and
 the other changes in [`CHANGELOG.md`](CHANGELOG.md) come with the install prompt
