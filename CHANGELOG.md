@@ -12,6 +12,11 @@ Changes since ZazenCodes' v2, the version in their video.
   prompt pointed at files that did not exist. The exception is added for v2.
 - A secret scan pattern that missed names like `SECRET_KEY` (found by running the
   gate against a throwaway repo).
+- The dashboard stopped updating as soon as a job existed. `job create` leaves a hidden
+  `.claim-NNN` folder in `factory/jobs/`, the dashboard tried to load a `job.json` from it,
+  got a 404, and that one failure rejected the whole load. It now ignores hidden folders and
+  skips a job folder whose `job.json` isn't written yet (it exists a few seconds before),
+  and a malformed `job.json` is shown as a banner instead of blanking the board.
 
 ### Added
 

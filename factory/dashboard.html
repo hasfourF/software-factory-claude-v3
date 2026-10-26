@@ -305,6 +305,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
 let jobs = []
+let loadProblems = [] // folders in jobs/ that are not jobs but should be mentioned
 let lastRender = ''
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
@@ -413,7 +414,7 @@ function card(job, rounds) {
 }
 
 async function render() {
-  const problems = []
+  const problems = [...loadProblems]
   const cards = new Map(COLUMNS.map((c) => [c, []]))
   for (const job of jobs) {
     if (!STAGES.has(job.stage)) { problems.push(`Job ${job.id} has unknown stage "${job.stage}"`); continue }
@@ -466,10 +467,18 @@ async function loadJobs() {
   const doc = new DOMParser().parseFromString(listing, 'text/html')
   const ids = [...doc.querySelectorAll('a')]
     .map((a) => decodeURIComponent(a.getAttribute('href')))
-    .filter((h) => h.endsWith('/'))
+    .filter((h) => h.endsWith('/') && !h.startsWith('.')) // .claim-NNN folders reserve job numbers; they are not jobs
     .map((h) => h.slice(0, -1))
     .sort()
-  return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+  const problems = []
+  const jobs = await Promise.all(ids.map(async (id) => {
+    let text
+    // A job's folder exists a few seconds before its job.json is written, so a missing file is not an error.
+    try { text = await fetchText(`jobs/${id}/job.json`) } catch { return null }
+    try { return JSON.parse(text) } catch { problems.push(`jobs/${id}/job.json is not valid JSON`); return null }
+  }))
+  loadProblems = problems
+  return jobs.filter(Boolean) // one bad folder must not stop the board
 }
 
 // ---- Drawer --------------------------------------------------------------
