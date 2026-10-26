@@ -92,7 +92,7 @@ These are plain scripts; run them from the project root. `python3` 3.10+ and `gh
 
 | Command | What it does |
 |---|---|
-| `factory/bin/doctor [--skip-checks]` | Is the project ready? Checks tools, config, labels, agents, name clashes, permissions, and that `checks.sh` passes on the base branch (`--skip-checks` skips that slow part). Run it first when something looks wrong. |
+| `factory/bin/doctor [--skip-checks] [--run-validation]` | Is the project ready? Checks tools, config, labels, agents, name clashes, permissions, and that `checks.sh` passes on the base branch (`--skip-checks` skips that slow part). `--run-validation` also runs the validation commands in `AGENTS.md` on a clean base branch, shows them first, and flags any that fail where `checks.sh` passes. Run it first when something looks wrong. |
 | `factory/bin/metrics [--json] [--github] [--min N]` | The same report as `/factory metrics`. |
 | `factory/bin/feed [--create] [--source <name>]` | The same as `/factory feed`. |
 | `factory/bin/job summary [<job>...]` | Every job: stage, round, PR, cost, time. |
@@ -215,6 +215,22 @@ approvals are ignored, because this file steers every agent. `/factory learn` do
 on demand and it runs after each `/factory run`. When the file grows,
 `/factory lessons` proposes a deduplicated version grouped by area, in
 `lessons.proposed.md`; you replace `lessons.md` with it yourself.
+
+## One list of checks
+
+`factory/checks.sh` decides. It is what the gate runs, and the agents are told so. A
+project's `AGENTS.md` often lists its own validation commands too, and the two lists drift:
+`AGENTS.md` runs strict `json.tool` over locale files that start with a `/* */` header,
+`checks.sh` knows they are JSONC, and every agent that follows `AGENTS.md` reports a
+failure the gate never sees. So:
+
+- An agent that sees an `AGENTS.md` command fail while `checks.sh` passes writes
+  `DISAGREES: <command>: <why>` and carries on, unless its own change plainly caused it. It
+  doesn't loop or block.
+- The approver escalates a job with a `DISAGREES` in it, because every job will hit it until
+  a person fixes one of the two lists. `metrics` counts these as their own reason.
+- `factory/bin/doctor --run-validation` finds the disagreement up front, and the installer
+  runs it. The fix is usually to make `AGENTS.md` say `bash factory/checks.sh`.
 
 ## Checks beyond `checks.sh`
 

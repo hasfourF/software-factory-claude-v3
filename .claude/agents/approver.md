@@ -41,6 +41,10 @@ APPROVE only if all of these hold:
   The factory refuses to
   merge those whatever you decide, so ESCALATE and name the flag.
 - `git merge-tree --write-tree origin/<base> <branch>` reports no conflicts.
+- No `DISAGREES:` line appears in build.md or any review. That marker means a command
+  in the project's `AGENTS.md` fails where `checks.sh` passes. It isn't this change's
+  fault, but every job will hit it until a person fixes one of the two, so ESCALATE and
+  say which command and which two sources disagree.
 
 ESCALATE if any of them fails, or if the change:
 

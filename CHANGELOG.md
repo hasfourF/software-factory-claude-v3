@@ -106,6 +106,15 @@ Changes since ZazenCodes' v2, the version in their video.
   commands, flags, subcommands, labels, settings and their defaults, agents, scripts,
   stages or links. The README now has a full command reference.
 
+- **One list of checks.** `checks.sh` now decides, in the builder, code reviewer and
+  approver prompts. A command in `AGENTS.md` that fails where `checks.sh` passes is
+  reported as `DISAGREES:` instead of blocking or looping, the approver escalates it so a
+  person fixes the two lists, and `metrics` counts it as its own reason. The installer
+  stops leaving two lists, and `factory/bin/doctor --run-validation` runs the commands
+  `AGENTS.md` lists on a clean base branch and flags any that fail where `checks.sh`
+  passes. Found in a Shopify theme whose `AGENTS.md` ran strict `json.tool` over JSONC
+  locale files.
+
 ### Changed
 
 - `protected_paths` also covers `factory/bin/*`, `factory/setup.sh` and

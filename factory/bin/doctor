@@ -2,12 +2,20 @@
 """Check that this project is ready to run the factory.
 
 Usage:
-  doctor                 run every check, including checks.sh on the base branch
-  doctor --skip-checks   skip running checks.sh (the slow one)
+  doctor                    run every check, including checks.sh on the base branch
+  doctor --skip-checks      skip running checks.sh (the slow one)
+  doctor --run-validation   also run the validation commands AGENTS.md (or CLAUDE.md) lists
+                            on a clean checkout of the base branch, and compare them with checks.sh
 
 Prints one line per check (ok, warn or FAIL) and exits 1 when any FAIL.
+
+--run-validation shows each command block before it runs it, and runs only blocks under a
+heading about validation, linting, checking, testing or building. checks.sh is what the gate
+enforces, so a block that fails where checks.sh passes means the two lists disagree, and agents
+following AGENTS.md would report a failure the gate never sees.
 """
 
+import contextlib
 import fnmatch
 import json
 import re
@@ -32,8 +40,8 @@ def report(level, what, detail=""):
     print(f"{level:<4}  {what}" + (f": {detail}" if detail else ""))
 
 
-def sh(*cmd, cwd=REPO):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def sh(*cmd, cwd=None):
+    return subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
 
 
 def version(text):
@@ -304,6 +312,88 @@ def check_layout():
                    "referenced from it; point AGENTS.md at CLAUDE.md or merge them")
 
 
+@contextlib.contextmanager
+def base_worktree(config):
+    """A detached checkout of origin/<base> with factory/setup.sh already run. Raises RuntimeError if it can't be made."""
+    base = config["base_branch"]
+    sh("git", "fetch", "origin", base)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "base"
+        added = sh("git", "worktree", "add", "--detach", str(tree), f"origin/{base}")
+        if added.returncode != 0:
+            raise RuntimeError(added.stderr.strip())
+        try:
+            setup = FACTORY / "setup.sh"
+            if setup.exists() and sh("bash", str(setup), cwd=tree).returncode != 0:
+                raise RuntimeError(f"factory/setup.sh fails in a fresh checkout of {base}")
+            yield tree
+        finally:
+            sh("git", "worktree", "remove", "--force", str(tree))
+
+
+def tail(res, n=8):
+    return "\n      ".join((res.stdout + res.stderr).rstrip().splitlines()[-n:])
+
+
+VALIDATION_HEADING = re.compile(r"(?i)validat|lint|check|test|build|verif")
+SHELL_LANGS = {"", "sh", "bash", "shell", "zsh"}
+
+
+def validation_blocks(text):
+    """[(heading, script)] for each fenced shell block under a heading that is about validating the project."""
+    blocks, heading, inside, buf, lang = [], "", False, [], ""
+    for line in text.splitlines():
+        if not inside:
+            h = re.match(r"#{1,6}\s+(.*)", line)
+            f = re.match(r"\s*```+\s*([\w-]*)\s*$", line)
+            if h:
+                heading = h.group(1).strip()
+            elif f:
+                inside, buf, lang = True, [], f.group(1).lower()
+        elif re.match(r"\s*```+\s*$", line):
+            inside = False
+            commands = [l for l in buf if l.strip() and not l.strip().startswith("#")]
+            if commands and lang in SHELL_LANGS and VALIDATION_HEADING.search(heading):
+                blocks.append((heading, "\n".join(l[2:] if l.startswith("$ ") else l for l in buf).strip("\n")))
+        else:
+            buf.append(line)
+    return blocks
+
+
+def check_validation(config):
+    """Run the commands AGENTS.md tells agents to run, on the base branch, and compare them with checks.sh."""
+    source = next((p for p in (REPO / "AGENTS.md", REPO / "CLAUDE.md") if p.exists()), None)
+    if not source:
+        report("warn", "validation commands", "no AGENTS.md or CLAUDE.md to read them from")
+        return
+    blocks = validation_blocks(source.read_text())
+    if not blocks:
+        report("ok", "validation commands", f"{source.name} lists none under a validation heading")
+        return
+    print(f"      {source.name} tells agents to run these; running each on a clean origin/{config['base_branch']}:")
+    for heading, script in blocks:
+        print(f"      [{heading}]\n" + "\n".join(f"        {line}" for line in script.splitlines()))
+    try:
+        with base_worktree(config) as tree:
+            results = [(heading, script, subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=tree,
+                                                        capture_output=True, text=True, timeout=300))
+                       for heading, script in blocks]
+            checks_ok = sh("bash", str(FACTORY / "checks.sh"), cwd=tree).returncode == 0
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        report("FAIL", "validation commands", f"couldn't run them: {e}")
+        return
+    for heading, script, res in results:
+        if res.returncode == 0:
+            report("ok", f"{source.name} [{heading}]", "passes on the base branch")
+        elif checks_ok:
+            report("FAIL", f"{source.name} [{heading}]",
+                   f"fails (exit {res.returncode}) but checks.sh passes on the same code, so the two disagree. "
+                   f"Agents following {source.name} will report a failure the gate never sees. Fix the command, or make "
+                   f"{source.name} say `bash factory/checks.sh` instead of listing its own.\n      {tail(res)}")
+        else:
+            report("FAIL", f"{source.name} [{heading}]", f"fails (exit {res.returncode}), as checks.sh does\n      {tail(res)}")
+
+
 def check_checks(config, skip):
     checks = FACTORY / "checks.sh"
     if "has no checks yet" in checks.read_text():
@@ -317,26 +407,16 @@ def check_checks(config, skip):
         report("warn", "checks.sh on the base branch", "skipped")
         return
     base = config["base_branch"]
-    sh("git", "fetch", "origin", base)
-    with tempfile.TemporaryDirectory() as tmp:
-        tree = Path(tmp) / "base"
-        added = sh("git", "worktree", "add", "--detach", str(tree), f"origin/{base}")
-        if added.returncode != 0:
-            report("FAIL", "checks.sh on the base branch", added.stderr.strip())
-            return
-        try:
-            setup = FACTORY / "setup.sh"
-            if setup.exists() and sh("bash", str(setup), cwd=tree).returncode != 0:
-                report("FAIL", "factory/setup.sh", f"fails in a fresh checkout of {base}")
-                return
+    try:
+        with base_worktree(config) as tree:
             res = sh("bash", str(checks), cwd=tree)
-        finally:
-            sh("git", "worktree", "remove", "--force", str(tree))
+    except RuntimeError as e:
+        report("FAIL", "checks.sh on the base branch", str(e))
+        return
     if res.returncode == 0:
         report("ok", f"checks.sh passes on origin/{base}")
     else:
-        tail = "\n      ".join((res.stdout + res.stderr).rstrip().splitlines()[-8:])
-        report("FAIL", f"checks.sh fails on origin/{base}", f"exit {res.returncode}\n      {tail}")
+        report("FAIL", f"checks.sh fails on origin/{base}", f"exit {res.returncode}\n      {tail(res)}")
 
 
 def check_cost():
@@ -355,10 +435,10 @@ def check_cost():
 
 
 def main(argv):
-    skip = argv == ["--skip-checks"]
-    if argv and not skip:
+    if not set(argv) <= {"--skip-checks", "--run-validation"}:
         print(__doc__.strip())
         sys.exit(2)
+    skip, validate = "--skip-checks" in argv, "--run-validation" in argv
     if check_tools():
         config = check_config()
         if config:
@@ -369,6 +449,8 @@ def main(argv):
             check_layout()
             check_recipes()
             check_checks(config, skip)
+            if validate:
+                check_validation(config)
             check_cost()
     print("\n" + ("not ready" if failures else "ready") + (f": {failures} failing" if failures else ""))
     sys.exit(1 if failures else 0)

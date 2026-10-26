@@ -75,7 +75,7 @@ class Commands(unittest.TestCase):
 
     def test_every_script_flag_is_documented(self):
         terminal = " ".join(row[0] for row in table_rows(section(README, "### From the terminal")))
-        for tool, flags in {"metrics": ["--json", "--github", "--min"], "feed": ["--create", "--source"], "doctor": ["--skip-checks"]}.items():
+        for tool, flags in {"metrics": ["--json", "--github", "--min"], "feed": ["--create", "--source"], "doctor": ["--skip-checks", "--run-validation"]}.items():
             for flag in flags:
                 self.assertIn(flag, terminal, f"{tool} {flag} is not in the README")
 
@@ -160,6 +160,35 @@ class Skill(unittest.TestCase):
             self.assertIn(name, agents, name)
         for name in set(re.findall(r"[Ss]pawn `([a-z-]+)`", SKILL)):
             self.assertIn(name, agents, name)
+
+
+class OneListOfChecks(unittest.TestCase):
+    """checks.sh decides; a project's AGENTS.md list that disagrees is reported, not obeyed."""
+
+    def agent(self, name):
+        return (ROOT / ".claude/agents" / f"{name}.md").read_text()
+
+    def test_builder_reviewer_and_approver_know_the_marker(self):
+        for name in ("builder", "reviewer-code", "approver"):
+            self.assertIn("DISAGREES", self.agent(name), name)
+
+    def test_checks_sh_is_the_authority_in_the_builder_and_reviewer(self):
+        builder, reviewer = self.agent("builder"), self.agent("reviewer-code")
+        self.assertIn("It decides", builder)
+        self.assertIn("guidance, not a second gate", builder)
+        self.assertIn("and it decides", reviewer)
+        self.assertNotIn("They must pass.", builder, "the builder must not be told AGENTS.md commands must pass")
+
+    def test_a_disagreement_is_not_changes_and_is_escalated(self):
+        self.assertIn("A `DISAGREES` is not", self.agent("reviewer-code"))
+        self.assertRegex(self.agent("approver"), r"No `DISAGREES:` line appears")
+        self.assertIn("ESCALATE", self.agent("approver").split("DISAGREES:")[1][:400])
+
+    def test_the_installer_reconciles_the_two_lists_and_runs_the_check(self):
+        install = (ROOT / "INSTALL.md").read_text()
+        self.assertIn("bash factory/checks.sh", install.split("**`AGENTS.md`**")[1].split("Then add a short section")[0])
+        self.assertIn("factory/bin/doctor --run-validation", install.split("## 3. Verify")[1])
+        self.assertNotIn("the validation commands, matching `factory/checks.sh`", install)
 
 
 class Counts(unittest.TestCase):

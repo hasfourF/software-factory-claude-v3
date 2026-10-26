@@ -60,7 +60,7 @@ def reason(text):
     """Why a job went to a human, from the words of decision.md."""
     t = text.lower()
     for pattern, name in (("cost", "cost cap"), ("repeated", "repeated failure"), ("same way", "repeated failure"),
-                          ("flagged", "gate flag"), ("builder is blocked", "builder blocked"),
+                          ("flagged", "gate flag"), ("disagree", "AGENTS.md and checks.sh disagree"), ("builder is blocked", "builder blocked"),
                           ("rounds exhausted", "rounds used up"), ("gate failed", "gate failed"),
                           ("conflicts with", "merge conflict"), ("merge failed", "merge failed")):
         if pattern in t:

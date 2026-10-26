@@ -173,7 +173,14 @@ stub. Existing instructions stay as they are; only add. Make sure it says:
 
 - how to set up a fresh checkout (install dependencies, env files to copy);
 - how to start the dev server on a given port, if the project has one;
-- the validation commands, matching `factory/checks.sh`.
+- how to validate: **`bash factory/checks.sh`**, which is what the gate runs and the only
+  command that decides. Two lists of validation commands drift apart: a project's
+  `AGENTS.md` may run strict `json.tool` over locale files that `checks.sh` correctly
+  treats as JSONC, and every agent that follows `AGENTS.md` then reports a failure the
+  gate never sees. So if the file already lists validation commands, don't add a second
+  list. Show the user the existing commands next to `checks.sh`, and with their OK
+  replace the list with `bash factory/checks.sh`, keeping only extra commands that
+  `checks.sh` really doesn't cover. This is the one place the "only add" rule gives way.
 
 Then add a short section:
 
@@ -252,7 +259,15 @@ gh label create factory:p2 --color FBCA04 --description "Build when there is tim
    skills and agents, permission rules that would stall or block the factory,
    hooks, a `factory/` folder that isn't the factory's, and an `AGENTS.md` that
    shadows a longer `CLAUDE.md`.
-2. `factory/bin/job queue` runs without an error.
+2. If `AGENTS.md` (or `CLAUDE.md`) lists validation commands, run
+   `factory/bin/doctor --run-validation`. It finds the shell blocks under headings about
+   validation, linting, checking, testing or building, shows each one, and runs it on a
+   clean checkout of the base branch. Before you run it, read those blocks and tell the
+   user what will run; if one deploys, publishes or deletes anything, skip it. A block
+   that fails while `checks.sh` passes is a disagreement: ask the user which is right,
+   then make `AGENTS.md` say `bash factory/checks.sh` or correct `checks.sh`. Don't
+   hand over until they agree.
+3. `factory/bin/job queue` runs without an error.
 
 ## 4. Hand over
 

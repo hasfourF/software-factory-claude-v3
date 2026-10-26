@@ -65,9 +65,16 @@ other jobs.
 Verify every criterion and record the evidence in build.md: the command you ran
 and its result, or what the page showed.
 
-- Run the validation commands `AGENTS.md` lists for the areas you changed, and
-  `bash <repo>/factory/checks.sh` from the worktree. They must pass. The
-  stop hook runs the checks too.
+- Run `bash <repo>/factory/checks.sh` from the worktree. It decides: it is what the
+  gate runs, so it must pass. The stop hook runs it too.
+- Also run the validation commands `AGENTS.md` lists for the areas you changed. They
+  are guidance, not a second gate, and a project's list can be stricter than, or
+  out of step with, `checks.sh`. If one fails and you can see your change caused it (a
+  typo in a file you just edited), fix it. If it fails while `checks.sh` passes and
+  you can't see how your change causes it, or it fails in files you didn't touch, don't
+  bend the code to satisfy it and don't stop: write a line
+  `DISAGREES: <command>: <what failed and why you think the lists differ>` under
+  `## Validation` in build.md and carry on.
 - Lint only the files you changed. Never run a command that rewrites files
   across the repo, such as a lint `--fix` over everything.
 - For criteria you can see on a page, start the dev server from `AGENTS.md` in

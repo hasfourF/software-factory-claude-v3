@@ -71,6 +71,7 @@ class Outcomes(Jobs):
                            ("This change is flagged: new-dependency.", "gate flag"),
                            ("The builder is blocked:", "builder blocked"),
                            ("Review rounds exhausted.", "rounds used up"),
+                           ("A command in AGENTS.md fails where checks.sh passes: the two disagree.", "AGENTS.md and checks.sh disagree"),
                            ("Touches money.", "approver's call")):
             self.assertEqual(want, metrics.reason(text), text)
 

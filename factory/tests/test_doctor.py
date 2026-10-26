@@ -1,10 +1,12 @@
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from support import load_script
+from support import commit, git, load_script, make_repo
 
 doctor = load_script("doctor")
 
@@ -193,6 +195,118 @@ class Recipes(Project):
         self.put(self.repo, "factory/recipes/add-endpoint.md", "WHEN: adding a REST endpoint\n")
         doctor.check_recipes()
         self.assertEqual(["ok"], [l for l, _, _ in self.lines])
+
+
+AGENTS_MD = """# Project
+
+## Architecture
+```bash
+echo "this is not a validation command"; exit 9
+```
+
+## Validation commands
+Run before every commit:
+
+```bash
+# Validate JSON files
+python3 -m json.tool config/settings_schema.json > /dev/null
+for f in locales/*.json; do
+  python3 -m json.tool "$f" > /dev/null
+done
+```
+
+```console
+$ npm run deploy
+```
+
+## Lint
+```sh
+$ python3 -c "import sys"
+```
+"""
+LOCALE = '/*\n * Shopify locale file: comments are allowed here\n */\n{"hello": "Hello"}\n'
+CHECKS_SH = """#!/usr/bin/env bash
+set -e
+python3 - <<'PY'
+import glob, json, re
+for f in glob.glob("locales/*.json"):
+    json.loads(re.sub(r"/\\*.*?\\*/", "", open(f).read(), flags=re.S))
+json.load(open("config/settings_schema.json"))
+PY
+"""
+
+
+class Validation(Project):
+    def test_only_shell_blocks_under_validation_headings_are_found(self):
+        blocks = doctor.validation_blocks(AGENTS_MD)
+        self.assertEqual(["Validation commands", "Lint"], [h for h, _ in blocks])      # not Architecture, not the console block
+        self.assertIn('for f in locales/*.json; do', blocks[0][1])                      # a loop stays one block
+        self.assertIn("done", blocks[0][1])
+        self.assertEqual('python3 -c "import sys"', blocks[1][1])                       # a "$ " prompt is dropped
+
+    def test_comment_only_and_non_shell_blocks_are_skipped(self):
+        text = "## Tests\n```bash\n# nothing to run\n```\n```python\nprint(1)\n```\n```json\n{}\n```\n"
+        self.assertEqual([], doctor.validation_blocks(text))
+
+    def test_a_heading_inside_a_block_does_not_change_the_heading(self):
+        text = "## Validation\n```bash\n# Build everything\nmake test\n```\n"
+        self.assertEqual([("Validation", "# Build everything\nmake test")], doctor.validation_blocks(text))
+
+    def project(self, agents_md):
+        """A project whose base branch has the factory committed, as an install requires."""
+        tmp, repo = make_repo({"AGENTS.md": agents_md, "locales/en.json": LOCALE, "config/settings_schema.json": "{}\n",
+                               "factory/checks.sh": CHECKS_SH})
+        self.addCleanup(tmp.cleanup)
+        for p in (mock.patch.object(doctor, "REPO", repo), mock.patch.object(doctor, "FACTORY", repo / "factory")):
+            p.start()
+            self.addCleanup(p.stop)
+        return repo
+
+    def run_validation(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            doctor.check_validation({"base_branch": "main"})
+        return out.getvalue()
+
+    def test_a_command_that_fails_where_checks_sh_passes_is_reported_as_a_disagreement(self):
+        """The real case: AGENTS.md runs strict json.tool over locale files that start with a comment."""
+        self.project(AGENTS_MD)
+        shown = self.run_validation()
+        self.assertIn("for f in locales/*.json", shown)                    # the commands are shown before they run
+        failed = [(l, w, d) for l, w, d in self.lines if l == "FAIL"]
+        self.assertEqual(1, len(failed))
+        self.assertIn("[Validation commands]", failed[0][1])
+        self.assertIn("checks.sh passes on the same code", failed[0][2])
+        self.assertIn("bash factory/checks.sh", failed[0][2])
+        self.assertEqual(("ok", "AGENTS.md [Lint]"), [(l, w) for l, w, _ in self.lines if "Lint" in w][0])
+
+    def test_pointing_agents_md_at_checks_sh_clears_it(self):
+        self.project("## Validation\n```bash\nbash factory/checks.sh\n```\n")
+        self.run_validation()
+        self.assertEqual(["ok"], [l for l, _, _ in self.lines])
+
+    def test_a_failure_checks_sh_shares_is_a_plain_failure(self):
+        repo = self.project("## Validation\n```bash\nexit 3\n```\n")
+        (repo / "factory" / "checks.sh").write_text("exit 1\n")
+        self.run_validation()
+        self.assertEqual(1, len(self.lines))
+        self.assertIn("as checks.sh does", self.lines[0][2])
+
+    def test_it_runs_on_the_base_branch_not_the_working_tree(self):
+        repo = self.project("## Validation\n```bash\ntest -f marker.txt\n```\n")
+        (repo / "marker.txt").write_text("only in the working tree")          # uncommitted, so absent from origin/main
+        self.run_validation()
+        self.assertEqual("FAIL", self.lines[0][0])
+
+    def test_nothing_to_run(self):
+        self.project("# Project\nNo commands here.\n")
+        self.run_validation()
+        self.assertEqual([("ok", "validation commands")], [(l, w) for l, w, _ in self.lines])
+
+    def test_no_agents_file(self):
+        repo = self.project("x")
+        (repo / "AGENTS.md").unlink()
+        self.run_validation()
+        self.assertEqual("warn", self.lines[0][0])
 
 
 class Layout(Project):

@@ -37,10 +37,17 @@ checkout; your one file goes there.
 
 ## Check
 
-The gate already ran `factory/checks.sh`. Run only the extra validation
-`AGENTS.md` lists for the areas the branch touches that checks.sh doesn't cover.
-Lint only changed files, and never use a mode that rewrites files, such as
-`--fix`.
+The gate already ran `factory/checks.sh`, and it decides: don't re-run it to
+second-guess a pass. Run only the extra validation `AGENTS.md` lists for the areas the
+branch touches that checks.sh doesn't cover. Lint only changed files, and never use a
+mode that rewrites files, such as `--fix`.
+
+A project's `AGENTS.md` list can be stricter than, or out of step with, `checks.sh`.
+If one of its commands fails while the gate passed, ask whether the branch plainly
+caused it. If it did, that is a finding. If it didn't (it fails on files the branch
+didn't change, or it is stricter than checks.sh), it is a setup problem, not a defect
+in this change: write `DISAGREES: <command>: <why>` under Notes, and don't make it
+CHANGES.
 
 ## What to look for
 
@@ -70,7 +77,7 @@ AC1: <test name or file:line, or "manual: <evidence>", or "none">
 AC2: ...
 
 ## Checks
-<command>: pass/fail
+<command>: pass/fail/disagrees
 
 ## Findings
 1. <path:line> <the problem and the fix you want>
@@ -80,7 +87,9 @@ Non-blocking observations. Optional.
 ```
 
 - The first line must be exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
-- A failing check, or a testable AC with no test, is CHANGES. Otherwise use
+- A check the branch plainly broke (the gate's failure, or a command whose failure
+  the branch caused), or a testable AC with no test, is CHANGES. A `DISAGREES` is not.
+  Otherwise use
   CHANGES only for bugs, spec gaps or clear convention breaks. Put style
   preferences under Notes.
 - Under Findings, write "None." when there are none.
