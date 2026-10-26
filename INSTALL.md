@@ -60,7 +60,7 @@ chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate fac
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `CHANGELOG.md`, `LICENSE`,
-`examples/`, `docs/` or `factory/tests/`. They describe the reference, not the user's project.
+`examples/`, `NOTICE` or `factory/tests/`. They describe the reference, not the user's project.
 
 ## 2. Adapt
 

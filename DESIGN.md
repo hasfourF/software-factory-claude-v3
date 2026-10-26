@@ -165,6 +165,9 @@ break this.
 
 ## What changed from v1
 
+This table is from the original project; the names are the people its author credited
+for each request. This version's changes are in [`CHANGELOG.md`](CHANGELOG.md).
+
 | v1 | v2 | Asked for by |
 |---|---|---|
 | `/factory <feature>`, one job per session | `/factory run` drains the issue queue, `concurrency` jobs at once, one orchestrator | Alex; @spec2k5, @MrHossamsaraya |

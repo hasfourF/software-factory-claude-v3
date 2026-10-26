@@ -1,0 +1,12 @@
+Software Factory for Claude Code (v3)
+
+This work is based on the software factory published by ZazenCodes in
+https://github.com/zazencodes/zazencodes-season-3 (src/software-factory-claude-code
+and src/software-factory-claude-code-v2), which is licensed under the GNU General
+Public License, version 3.
+
+This version modifies it; the changes are listed in CHANGELOG.md and in the git
+history. It is distributed under the same license (see LICENSE), without any
+warranty. The names ZazenCodes and its logos are not licensed for use here, and
+the promotional images and links of the original project are not part of this
+work.

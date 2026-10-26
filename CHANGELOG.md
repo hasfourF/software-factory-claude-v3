@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Changes since the version in the video.
+Changes since ZazenCodes' v2, the version in their video.
 
 ### Fixed
 
