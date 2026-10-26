@@ -86,6 +86,11 @@ def check_config():
         report("FAIL", "auto_merge.risks", "must be a list of low, medium and high")
     if auto.get("areas") is not None and not isinstance(auto["areas"], list):
         report("FAIL", "auto_merge.areas", "must be null (every area) or a list of top-level directories")
+    risky = {"bash", "sh", "zsh", "dash", "eval", "sudo", "env", "xargs", "python", "python3", "node", "ruby", "perl", "php"}
+    for entry in (config.get("gate") or {}).get("verify_allow") or []:
+        if entry.strip() in risky:
+            report("warn", "gate.verify_allow", f"`{entry}` alone lets a spec run any code; allow a specific "
+                   "subcommand instead, such as `python3 -m pytest`")
     plan = config.get("plan_review", "never")
     if plan not in {"never", "high", "medium", "always"}:
         report("FAIL", "plan_review", f"{plan!r} isn't never, high, medium or always")

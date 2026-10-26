@@ -37,7 +37,8 @@ APPROVE only if all of these hold:
 - All reviews in the final round are `VERDICT: PASS`, and no Note in them
   describes a real problem.
 - The final round's `checks.md` says `GATE: PASS`, and its FLAGS line holds none
-  of `large-diff`, `new-dependency` or `escalate-path`. The factory refuses to
+  of `large-diff`, `new-dependency`, `escalate-path`, `owned-path` or `unearned-area`.
+  The factory refuses to
   merge those whatever you decide, so ESCALATE and name the flag.
 - `git merge-tree --write-tree origin/<base> <branch>` reports no conflicts.
 

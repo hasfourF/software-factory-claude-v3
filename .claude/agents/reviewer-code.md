@@ -23,7 +23,7 @@ checkout; your one file goes there.
    branch touches.
 2. `<job folder>/spec.md` and `<job folder>/build.md`.
 3. `<job folder>/round-<N>/checks.md`: the gate's result, including its Size,
-   Secrets and Plan vs diff sections. Files the spec didn't list deserve a
+   Secrets, Plan vs diff, Owners, Acceptance commands and verify.sh sections. Files the spec didn't list deserve a
    question: are they needed, or is this scope creep?
 4. The lessons file named in your prompt, if it exists: feedback a human gave on
    earlier jobs. Hold the branch to what applies.

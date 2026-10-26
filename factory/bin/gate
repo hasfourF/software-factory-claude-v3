@@ -13,10 +13,25 @@ so a branch can't change the checks it is judged by. It fails when:
     on a retry is reported as flaky, not hidden);
   - the branch modifies or deletes a file matching config.json `protected_paths`
     (fnmatch patterns, where `*` also matches `/`; adding new files is fine);
-  - the branch adds a line that looks like a secret (`gate.scan_secrets`).
+  - the branch adds a line that looks like a secret (`gate.scan_secrets`);
+  - an acceptance command in the spec's `## Verification` fails (see below);
+  - `factory/verify.sh`, if the project has one, exits non-zero.
+
+Acceptance commands let the gate check the spec itself instead of trusting
+build.md. Each line of `## Verification` is `AC1: <command>`. The command is split
+like a shell would but never run through one (no pipes, no `;`), and only runs if
+it starts with an entry of `gate.verify_allow`, which is empty until the project
+chooses. A spec comes from an agent that read an issue, so nothing runs by default.
+
+`factory/verify.sh` is for what is too slow for checks.sh: start the app and hit
+it, visual regression, coverage of the changed lines. It runs in the worktree after
+checks.sh passes, with $FACTORY_JOB and $FACTORY_PORT set.
+
+A change to a path that CODEOWNERS (read from the base branch, so the branch can't
+edit its way out) gives to someone raises `owned-path`.
 
 It also raises FLAGS in checks.md, which never fail the gate but change what
-happens next: `large-diff`, `new-dependency`, `escalate-path` and
+happens next: `large-diff`, `new-dependency`, `escalate-path`, `owned-path` and
 `unearned-area` (in `gate.escalate_flags`) always go to a human; `security-path`
 adds the security review; `off-plan` tells reviewers the branch touched files the
 spec didn't list.
@@ -29,7 +44,9 @@ changed paths are written to round-N/changed-files.txt for the metrics.
 
 import fnmatch
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -127,6 +144,117 @@ def planned(job_dir):
     return found or None
 
 
+def job_port(job_id):
+    """The dev-server port for a job, as the skill gives it to agents: base + step * job number."""
+    ports = CONFIG.get("ports", {"base": 5100, "step": 10})
+    m = re.search(r"\d+", job_id)
+    return ports["base"] + ports["step"] * (int(m.group()) % 50 if m else 0)
+
+
+def verification(job_dir):
+    """[(AC id, command)] from the spec's `## Verification` section."""
+    spec = job_dir / "spec.md"
+    m = re.search(r"^## Verification\n(.*?)(?=^## |\Z)", spec.read_text(), re.M | re.S) if spec.exists() else None
+    found = []
+    for line in (m.group(1).splitlines() if m else []):
+        n = re.fullmatch(r"(AC\d+):\s*`?(.+?)`?", line.strip())
+        if n:
+            found.append((n.group(1), n.group(2)))
+    return found
+
+
+def run_acceptance(worktree, commands, allow, timeout, port):
+    """[(AC id, command, status, detail)]; status is pass, fail, timeout or skipped. No shell is involved."""
+    results = []
+    env = {**os.environ, "FACTORY_PORT": str(port)}
+    for ac, command in commands:
+        try:
+            argv = shlex.split(command)
+        except ValueError as e:
+            results.append((ac, command, "skipped", f"can't parse it: {e}"))
+            continue
+        if not argv or not any(argv[:len(a.split())] == a.split() for a in allow):
+            results.append((ac, command, "skipped", "not on gate.verify_allow"))
+            continue
+        try:
+            res = subprocess.run(argv, cwd=worktree, capture_output=True, text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            results.append((ac, command, "timeout", f"no result after {timeout}s"))
+            continue
+        except OSError as e:
+            results.append((ac, command, "fail", str(e)))
+            continue
+        tail = "\n".join((res.stdout + res.stderr).rstrip().splitlines()[-10:])
+        results.append((ac, command, "pass" if res.returncode == 0 else "fail", f"exit {res.returncode}\n{tail}".strip()))
+    return results
+
+
+def run_verify_script(worktree, job_id, timeout):
+    """(ran, ok, detail) for factory/verify.sh."""
+    script = FACTORY / "verify.sh"
+    if not script.exists():
+        return False, True, ""
+    env = {**os.environ, "FACTORY_JOB": job_id, "FACTORY_PORT": str(job_port(job_id))}
+    try:
+        res = subprocess.run(["bash", str(script)], cwd=worktree, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return True, False, f"no result after {timeout}s"
+    tail = "\n".join((res.stdout + res.stderr).rstrip().splitlines()[-40:])
+    return True, res.returncode == 0, f"exit {res.returncode}\n{tail}"
+
+
+def codeowner_rules(worktree):
+    """[(pattern, regex, owners)] from CODEOWNERS on the base branch."""
+    for name in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+        res = subprocess.run(["git", "show", f"origin/{CONFIG['base_branch']}:{name}"], cwd=worktree,
+                             capture_output=True, text=True)
+        if res.returncode == 0:
+            break
+    else:
+        return []
+    rules = []
+    for line in res.stdout.splitlines():
+        parts = line.split("#", 1)[0].split()
+        if parts:
+            rules.append((parts[0], owner_regex(parts[0]), parts[1:]))
+    return rules
+
+
+def owner_regex(pattern):
+    """A CODEOWNERS (gitignore-style) pattern as a regex over repo-relative paths."""
+    directory = pattern.endswith("/")
+    body = pattern.strip("/")
+    anchored = pattern.startswith("/") or "/" in body
+    out, i = "", 0
+    while i < len(body):
+        if body.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif body.startswith("/**", i) and i + 3 == len(body):
+            out, i = out + "/.*", i + 3
+        elif body.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif body[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif body[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(body[i]), i + 1
+    return re.compile(("^" if anchored else "^(?:.*/)?") + out + ("/.*$" if directory else "(?:/.*)?$"))
+
+
+def owned(paths, rules):
+    """{path: owners} for the paths whose last matching rule names owners. A bare `*` rule is the repo-wide default."""
+    hits = {}
+    for path in paths:
+        owners = None
+        for pattern, regex, who in rules:
+            if regex.match(path):
+                owners = None if pattern == "*" else who
+        if owners:
+            hits[path] = owners
+    return hits
+
+
 def run_checks(worktree, retries=0):
     """(exit code, log, seconds, attempts that failed before the last one)."""
     start = time.monotonic()
@@ -152,7 +280,15 @@ def gate(job_id, merge):
     secrets = find_secrets(worktree) if settings.get("scan_secrets", True) else []
     code, log, seconds, failed_first = run_checks(worktree, settings.get("retries", 0))
     flaky = code == 0 and failed_first > 0
-    verdict = "PASS" if code == 0 and not protected and not secrets else "FAIL"
+    # The slower, project-specific verification only runs on a branch that already passes the fast checks.
+    allow = settings.get("verify_allow") or []
+    commands = verification(job_dir)
+    acceptance = (run_acceptance(worktree, commands, allow, settings.get("verify_timeout", 60), job_port(job_id))
+                  if code == 0 else [])
+    ran_script, script_ok, script_out = ((run_verify_script(worktree, job_id, settings.get("verify_script_timeout", 300)))
+                                         if code == 0 else (False, True, ""))
+    acceptance_ok = all(status in {"pass", "skipped"} for _, _, status, _ in acceptance)
+    verdict = ("PASS" if code == 0 and not protected and not secrets and acceptance_ok and script_ok else "FAIL")
 
     files = changes(worktree)
     paths = [new for _, new, _ in files]
@@ -170,6 +306,9 @@ def gate(job_id, merge):
     unearned = sorted({area(p) for p in paths if isinstance(earned, list) and area(p) not in earned})
     if unearned:
         flags.append("unearned-area")
+    owners = owned(paths, codeowner_rules(worktree)) if settings.get("respect_codeowners", True) else {}
+    if owners:
+        flags.append("owned-path")
     plan = planned(job_dir)
     unplanned = [p for p in paths if plan and not matches(p, plan)]
     if len(unplanned) > OFF_PLAN_FILES:
@@ -187,21 +326,41 @@ def gate(job_id, merge):
         + ("\n".join(f"- {s}" for s in secrets) if secrets else "None found in added lines.")
         + f"\n\n## Size\n{size} lines changed in {len(paths)} files"
         + (f" (limit {settings['max_diff_lines']})" if "large-diff" in flags else "") + "."
+        + ("\n\n## Owners\nCODEOWNERS gives these to someone, so a human merges this:\n"
+           + "\n".join(f"- {p}: {' '.join(o)}" for p, o in sorted(owners.items())) if owners else "")
         + ("\n\n## Areas\nOutside auto_merge.areas, so a human merges this: " + ", ".join(unearned) if unearned else "")
         + "\n\n## Plan vs diff\n"
         + ("The spec lists no files to touch." if plan is None else
            "\n".join(f"- not in the spec: {p}" for p in unplanned) if unplanned else "Every changed file is in the spec.")
+        + acceptance_section(commands, acceptance, code, allow)
+        + (f"\n\n## verify.sh\n{'Passed' if script_ok else 'FAILED'}.\n\n```\n{script_out}\n```" if ran_script else "")
         + (f"\n\n## Flaky\nchecks.sh failed {failed_first} time(s) before it passed. Treat the tests it ran as suspect."
            if flaky else "")
         + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     notes = [f"protected paths changed: {', '.join(protected)}"] if protected else []
     notes += [f"{len(secrets)} possible secret(s)"] if secrets else []
+    notes += [f"{sum(1 for r in acceptance if r[2] in {'fail', 'timeout'})} acceptance command(s) failed"] \
+        if not acceptance_ok else []
+    notes += ["verify.sh failed"] if not script_ok else []
     notes += ["flaky: passed on retry"] if flaky else []
     notes += [f"flags: {', '.join(flags)}"] if flags else []
     print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"
           + "".join(f", {n}" for n in notes) + ")")
     sys.exit(0 if verdict == "PASS" else 1)
+
+
+def acceptance_section(commands, results, checks_code, allow):
+    if not commands:
+        return "\n\n## Acceptance commands\nThe spec has no `## Verification` section."
+    if checks_code != 0:
+        return "\n\n## Acceptance commands\nNot run: checks.sh failed first."
+    lines = ["", "", "## Acceptance commands"]
+    if not allow:
+        lines.append("None ran: gate.verify_allow is empty, so no spec command is trusted yet.")
+    for ac, command, status, detail in results:
+        lines.append(f"- {ac} {status.upper()}: `{command}`" + (f"\n  ```\n  " + detail.replace("\n", "\n  ") + "\n  ```" if status != "skipped" else f" ({detail})"))
+    return "\n".join(lines)
 
 
 def hook():

@@ -26,6 +26,7 @@
   "protected_paths": [
     "factory/checks.sh",
     "factory/setup.sh",
+    "factory/verify.sh",
     "factory/config.json",
     "factory/bin/*",
     ".github/workflows/*"
@@ -64,7 +65,11 @@
       "Gemfile",
       "composer.json"
     ],
-    "escalate_flags": ["large-diff", "new-dependency", "escalate-path", "unearned-area"]
+    "escalate_flags": ["large-diff", "new-dependency", "escalate-path", "unearned-area", "owned-path"],
+    "respect_codeowners": true,
+    "verify_allow": [],
+    "verify_timeout": 60,
+    "verify_script_timeout": 300
   },
   "auto_merge": {
     "risks": ["low", "medium", "high"],

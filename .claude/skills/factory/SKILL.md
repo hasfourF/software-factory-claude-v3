@@ -240,7 +240,7 @@ Spawn `approver` (`<paths> Final round: <N>.`) and read the first line of `decis
     with the conflict note; the builder resolves it and the job runs the gate and
     reviews again.
   - A refusal that says the change is flagged (`large-diff`, `new-dependency`,
-    `escalate-path`, `unearned-area`, or `risk-<level>` when the risk isn't in
+    `escalate-path`, `owned-path`, `unearned-area`, or `risk-<level>` when the risk isn't in
     `auto_merge.risks`): those always go to a human. It has rewritten `decision.md`
     to `ESCALATE`; run `job advance <id> needs-human`.
 - `ESCALATE`: `job advance <id> needs-human`. It marks the PR ready, posts the decision

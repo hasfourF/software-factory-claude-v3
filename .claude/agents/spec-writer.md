@@ -62,6 +62,18 @@ something. The builder tests against this list, the code reviewer maps each
 item to a test, and the approver checks it, so every item must be checkable by
 someone who only has the repo.
 
+## Verification
+Only when `gate.verify_allow` in `factory/config.json` is not empty (read it); otherwise
+leave this section out. One line per criterion that a command can check:
+
+    AC1: <command>
+
+The gate runs each command itself in the worktree, with no shell: no pipes, `&&`,
+`;`, redirects or `$(...)`. A command runs only if it starts with an entry of
+`verify_allow`, exits 0 when the criterion holds, finishes in `verify_timeout`
+seconds and needs no server. Prefer a command that fails today and passes once
+the work is done. Criteria you can't check this way stay in prose above.
+
 ## Files to touch
 A bullet per file or glob the change should modify or add, each in backticks
 with a few words on why. The gate compares the real diff with this list, and

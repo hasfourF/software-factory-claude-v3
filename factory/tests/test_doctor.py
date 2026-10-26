@@ -115,6 +115,36 @@ class Permissions(Project):
         self.assertEqual(["warn"], self.levels("PreToolUse"))
 
 
+class Config(Project):
+    def config(self, **gate):
+        base = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        base["gate"].update(gate)
+        self.put(self.repo, "factory/config.json", json.dumps(base))
+
+    def check(self):
+        with mock.patch.object(doctor, "FACTORY", self.repo / "factory"):
+            return doctor.check_config()
+
+    def test_the_shipped_config_is_clean(self):
+        self.config()
+        self.assertIsNotNone(self.check())
+        self.assertEqual([], [l for l in self.lines if l[0] != "ok"])
+
+    def test_a_shell_or_bare_interpreter_on_the_verify_allowlist_warns(self):
+        self.config(verify_allow=["pytest", "bash", "python3", "python3 -m pytest", "npm run test:e2e"])
+        self.check()
+        warned = [d for level, w, d in self.lines if level == "warn" and w == "gate.verify_allow"]
+        self.assertEqual(2, len(warned))
+        self.assertTrue(any(d.startswith("`bash`") for d in warned) and any(d.startswith("`python3`") for d in warned))
+
+    def test_bad_auto_merge_settings_fail(self):
+        cfg = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        cfg["auto_merge"] = {"risks": ["low", "extreme"], "areas": "src"}
+        self.put(self.repo, "factory/config.json", json.dumps(cfg))
+        self.check()
+        self.assertEqual(["FAIL", "FAIL"], [l for l, w, _ in self.lines if w.startswith("auto_merge")])
+
+
 class Layout(Project):
     def test_foreign_files_in_factory_warn(self):
         self.put(self.repo, "factory/bin/job", "x")

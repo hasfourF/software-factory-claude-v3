@@ -66,6 +66,14 @@ Changes since ZazenCodes' v2, the version in their video.
   merged, and `job` refuses any GitHub call from a replay. `replay-list`,
   `replay-create`, `replay-finish`, `replay-clean`. New stage `replayed`.
 - The gate writes `round-N/changed-files.txt`.
+- **Acceptance commands.** A spec's `## Verification` lines (`AC1: <command>`) are run
+  by the gate, without a shell, and only if the command starts with an entry of
+  `gate.verify_allow` (empty by default). A failing command fails the gate.
+- **`factory/verify.sh`.** Optional slow verification (app smoke tests, visual
+  regression, coverage), run after `checks.sh` passes with `$FACTORY_JOB` and
+  `$FACTORY_PORT`.
+- **CODEOWNERS.** A path with an owner raises `owned-path`, which always goes to a
+  human; rules come from the base branch.
 
 ### Changed
 

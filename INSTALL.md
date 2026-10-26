@@ -89,6 +89,13 @@ install dependencies, copy `.env.example`. The factory runs it once, with the
 new worktree as the working directory, and refuses to start a job whose setup
 fails. If the project needs nothing, delete the file. Keep it non-interactive.
 
+**`factory/verify.sh`** (optional). Slower, project-specific verification that is too
+heavy for `checks.sh`: start the app on `$FACTORY_PORT` and hit it, run end-to-end or
+visual-regression tests, check coverage of the changed lines. The gate runs it in the
+job's worktree after `checks.sh` passes, with `$FACTORY_JOB` and `$FACTORY_PORT` set,
+and fails the job if it exits non-zero. Offer to write one if the project has such
+tests; it must start and stop anything it starts. Skip it otherwise.
+
 **`factory/config.json`.**
 
 - `base_branch`: the default branch.
@@ -108,6 +115,15 @@ fails. If the project needs nothing, delete the file. Keep it non-interactive.
   they want; `high` is the default.
 - `limits`: the per-job and per-run cost caps (API-equivalent USD) and the stage
   timeout. Ask the user for caps they are comfortable with.
+- `gate.verify_allow`: leave it empty unless the user agrees. Each entry is a command
+  prefix (`pytest`, `npm run test:e2e`, `go test`) that the gate may run from a spec's
+  `## Verification` lines (`AC1: pytest tests/test_x.py`), without a shell. It lets
+  an agent's spec choose what runs with the user's rights, so allow specific
+  commands from the project's own test setup, never a shell or a bare interpreter
+  (`python3`, `node`); `doctor` warns about those.
+- `gate.respect_codeowners`: on by default. If the project has a `CODEOWNERS` file,
+  a change to a path that has an owner (other than a catch-all `*`) is never merged
+  without a human. Tell the user.
 - `auto_merge`: leave `risks` as all three and `areas` as `null` for now. They are
   the autonomy dial: `risks` limits which risk levels the factory may merge itself,
   and a list in `areas` (top-level directories) means a change touching any other

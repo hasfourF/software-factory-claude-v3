@@ -90,6 +90,20 @@ to change, and a separate **Recommendations** section for things worth doing tha
 it did not put in scope. The code reviewer later maps each AC to a test, and the
 gate compares the real diff with the planned files.
 
+## Checks beyond `checks.sh`
+
+The gate is only as good as what it runs, so there are three ways to make it stronger:
+
+- **Acceptance commands.** The spec can list `AC1: pytest tests/test_x.py` lines under
+  `## Verification`. The gate runs them itself instead of trusting `build.md`. A spec
+  comes from an agent that read an issue, so nothing runs until you list command
+  prefixes in `gate.verify_allow`, and commands run without a shell (no pipes, no `;`).
+- **`factory/verify.sh`.** For what is too slow for `checks.sh`: boot the app and hit
+  it, end-to-end or visual-regression tests, coverage of changed lines. It runs after
+  `checks.sh` passes, with `$FACTORY_PORT` set.
+- **`CODEOWNERS`.** A change to a path that has an owner always waits for a human
+  (the rules are read from the base branch, so a branch can't edit its way out).
+
 ## Know how far to trust it
 
 Run it on your own history before you run it on new work, then let the numbers
