@@ -10,7 +10,9 @@
     "plan": "factory:plan",
     "plan_review": "factory:plan-review",
     "plan_approved": "factory:plan-approved",
-    "priority_prefix": "factory:p"
+    "priority_prefix": "factory:p",
+    "feed": "factory:feed",
+    "proposed": "factory:proposed"
   },
   "plan_review": "high",
   "max_spec_revisions": 2,
@@ -83,6 +85,16 @@
     "max_cost_usd_per_job": 5.0,
     "max_cost_usd_per_run": 25.0,
     "stage_timeout_minutes": 90
+  },
+  "feeders": {
+    "ci": { "enabled": true, "label": "proposed" },
+    "deps": { "enabled": false, "label": "proposed", "min_severity": "high" },
+    "todo": { "enabled": false, "label": "proposed", "pattern": "(TODO|FIXME)\\(factory\\)" },
+    "custom": [],
+    "max_open": 5,
+    "max_per_run": 3,
+    "cooldown_days": 30,
+    "auto_create": false
   },
   "lessons": {
     "curate_after": 20

@@ -1,8 +1,11 @@
+import contextlib
+import io
 import json
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from support import commit, git, load_script, make_repo
 
@@ -359,3 +362,46 @@ class Overlap(Quiet, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Feeders(Quiet, unittest.TestCase):
+    def queue(self, queued, proposed):
+        def fake(*args):
+            if "closed" in args:
+                return []
+            return {"factory": queued, "factory:proposed": proposed}[args[args.index("--label") + 1]]
+
+        out = io.StringIO()
+        with mock.patch.object(job, "gh_json", fake), contextlib.redirect_stdout(out):
+            job.cmd_queue()
+        return [line.split("\t") for line in out.getvalue().splitlines()]
+
+    def issue(self, n, title, *labels, body=""):
+        return {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}
+
+    def test_a_proposed_issue_waits_for_you_and_is_never_built(self):
+        rows = self.queue([self.issue(1, "Real one", "factory")],
+                          [self.issue(2, "Fix failing CI: tests on main", "factory:feed", "factory:proposed", "factory:p0")])
+        actions = {r[1]: r[0] for r in rows}
+        self.assertEqual({"1": "new", "2": "wait"}, actions)
+        self.assertIn("add the factory label to build it", [r for r in rows if r[1] == "2"][0][4])
+
+    def test_proposed_issues_that_you_already_queued_are_not_listed_twice(self):
+        both = self.issue(3, "Promoted", "factory", "factory:proposed")
+        rows = self.queue([both], [both])
+        self.assertEqual([("new", "3")], [(r[0], r[1]) for r in rows])
+
+    def test_a_job_remembers_that_a_feeder_filed_its_issue(self):
+        for labels, want in ((["factory", "factory:feed", "factory:proposed"], "feeder"), (["factory"], "issue")):
+            issue = {"number": 5, "title": "T", "body": "", "author": {"login": "a"}, "url": "u", "state": "OPEN",
+                     "labels": [{"name": l} for l in labels], "comments": []}
+            with mock.patch.object(job, "fetch_issue", lambda n: issue), mock.patch.object(job, "write_issue_md", lambda j: None), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                job.cmd_create("5")
+            made = sorted(p for p in job.JOBS.iterdir() if (p / "job.json").exists())[-1]
+            self.assertEqual(want, json.loads((made / "job.json").read_text())["origin"])
+            for p in job.JOBS.iterdir():
+                import shutil
+                shutil.rmtree(p)
+
+

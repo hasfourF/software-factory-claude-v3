@@ -87,6 +87,15 @@ Changes since ZazenCodes' v2, the version in their video.
   it touched. `/factory lessons` proposes a deduplicated, grouped version in
   `lessons.proposed.md` for a human to adopt.
 
+- **Feeders.** `factory/bin/feed` (`/factory feed`) files issues for a failing CI run on
+  the base branch, open Dependabot advisories, `TODO(factory)` comments on the base
+  branch, and custom commands. A dry run unless `--create`. Issues get `factory:feed` and
+  `factory:proposed` and wait for a human to add `factory`; a source can be set to queue
+  directly, which `doctor` warns about. Stable keys, a cooldown, `max_per_run` and
+  `max_open` stop duplicates and floods, and it files nothing if it can't tell what is
+  already filed. Proposed issues show as waiting in `job queue`; jobs record their
+  `origin` and `metrics` reports by it.
+
 ### Changed
 
 - `protected_paths` also covers `factory/bin/*`, `factory/setup.sh` and

@@ -91,10 +91,37 @@ def check_config():
         if entry.strip() in risky:
             report("warn", "gate.verify_allow", f"`{entry}` alone lets a spec run any code; allow a specific "
                    "subcommand instead, such as `python3 -m pytest`")
+    check_feeders(config.get("feeders") or {})
     plan = config.get("plan_review", "never")
     if plan not in {"never", "high", "medium", "always"}:
         report("FAIL", "plan_review", f"{plan!r} isn't never, high, medium or always")
     return config
+
+
+def check_feeders(feeders):
+    sources = {n: feeders[n] for n in ("ci", "deps", "todo") if isinstance(feeders.get(n), dict)}
+    for entry in feeders.get("custom") or []:
+        if not (isinstance(entry, dict) and re.fullmatch(r"[a-z0-9-]+", str(entry.get("name", ""))) and entry.get("command")):
+            report("FAIL", "feeders.custom", "each entry needs a `name` (lowercase letters, digits, dashes) and a `command`")
+        else:
+            sources[f"custom:{entry['name']}"] = entry
+    for name, source in sources.items():
+        if source.get("label", "proposed") not in {"proposed", "factory"}:
+            report("FAIL", f"feeders.{name}.label", "must be \"proposed\" or \"factory\"")
+    for key in ("max_open", "max_per_run", "cooldown_days"):
+        if key in feeders and not (isinstance(feeders[key], int) and feeders[key] >= 0):
+            report("FAIL", f"feeders.{key}", "must be a whole number, 0 or more")
+    pattern = (feeders.get("todo") or {}).get("pattern")
+    if pattern is not None:
+        try:
+            if re.search(pattern, ""):
+                report("FAIL", "feeders.todo.pattern", "matches an empty line, so every line would be a TODO")
+        except re.error as e:
+            report("FAIL", "feeders.todo.pattern", f"isn't a valid pattern: {e}")
+    trusted = [n for n, s in sources.items() if s.get("enabled", True) and s.get("label") == "factory"]
+    if trusted:
+        report("warn", "feeders", f"{', '.join(trusted)} label their issues `factory`, so they are built without your review of "
+               "the issue" + ("; with auto_create on, nobody looks at any of it" if feeders.get("auto_create") else ""))
 
 
 def check_repo(config):

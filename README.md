@@ -69,6 +69,7 @@ One Claude Code session orchestrates every job, `concurrency` at a time
 /factory rework <n>   send an escalated job back to the builder with your PR comments
 /factory replay <pr>  rebuild a past merged PR offline and compare it with what shipped
 /factory metrics      how much to trust it, and where
+/factory feed         find work (failing CI, advisories, TODOs) and propose it as issues
 /factory recipe <pr>  draft a recipe from merged PRs that did the same kind of change
 /factory learn        add review comments and reverts on merged PRs to lessons.md
 /factory lessons      propose a tidied lessons.md
@@ -92,6 +93,30 @@ The spec lists numbered acceptance criteria (AC1, AC2, ...), the files it expect
 to change, and a separate **Recommendations** section for things worth doing that
 it did not put in scope. The code reviewer later maps each AC to a test, and the
 gate compares the real diff with the planned files.
+
+## Fill the queue
+
+`/factory feed` finds work the project already knows about and files it, so the queue
+isn't only what you type. It shows what it found first and files nothing until you say.
+
+| Source | Files an issue when | On by default |
+|---|---|---|
+| `ci` | the latest run of a workflow on the base branch failed (the log's tail is quoted in the issue) | yes |
+| `deps` | an open Dependabot security alert is at or above `min_severity` | no |
+| `todo` | a committed comment says `TODO(factory): ...` (your pattern, on the base branch only) | no |
+| `custom` | your own command prints a JSON list (Sentry, Linear, anything with an API) | none |
+
+Issues are labeled `factory:feed` and **`factory:proposed`, not `factory`**. The `factory`
+label is what lets text reach an agent that can commit, and a CI log or a code comment is
+text nobody wrote for an agent. So a feeder proposes and you promote: read the issue,
+add `factory`. `/factory run` lists proposed issues as waiting. You can set a source's
+`label` to `"factory"` if you trust it; `doctor` warns when you do.
+
+It can't flood you: every item has a stable key (a moved TODO keeps it), a key with an
+open issue or one closed in the last `cooldown_days` isn't filed again, at most
+`max_per_run` are filed per run, and none while `max_open` feeder issues are open. If it
+can't read what's already filed, it files nothing. `metrics` splits results by origin, so
+you can see whether feeder work merges as well as work you filed.
 
 ## Teach it your project
 
@@ -216,6 +241,7 @@ factory/
   bin/route                   risk + surfaces → the job's reviewers and models
   bin/doctor                  is this project ready to run the factory?
   bin/metrics                 auto-merge rate, cost, reverts; which areas have earned trust
+  bin/feed                    files issues for failing CI, advisories, TODO(factory) comments, custom sources
   setup.sh                    prepares a fresh worktree (the installer fills it in)
   lessons.md                  feedback from your reworks, reviews and reverts, read by builders and reviewers
   recipes/                    your playbooks for common kinds of change (drafts/ is never used)

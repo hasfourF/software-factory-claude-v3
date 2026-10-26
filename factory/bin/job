@@ -53,6 +53,7 @@ CONFIG = json.loads((FACTORY / "config.json").read_text())
 LABELS = {
     "plan": "factory:plan", "plan_review": "factory:plan-review",
     "plan_approved": "factory:plan-approved", "priority_prefix": "factory:p",
+    "feed": "factory:feed", "proposed": "factory:proposed",
     **CONFIG["labels"],
 }
 BASE = CONFIG["base_branch"]
@@ -785,6 +786,7 @@ def cmd_create(number):
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
         "depends_on": depends_on(issue["body"]), "priority": priority_of(l["name"] for l in issue["labels"]),
+        "origin": "feeder" if LABELS["feed"] in {l["name"] for l in issue["labels"]} else "issue",
         "spec_revisions": 0, "failures": [],
         "cost_usd": 0.0, "cost_by_role": {}, "started": now(), "stage_since": now(), "ended": None,
     }
@@ -851,6 +853,12 @@ def cmd_queue():
             rows.append((rank, "skip", n, j["id"], j["stage"], "merged"))
         else:
             rows.append((rank, "resume", n, j["id"], j["stage"], f"{tag}round {j['round']}"))
+    proposed = gh_json("issue", "list", "--label", LABELS["proposed"], "--state", "open", "--limit", "50",
+                       "--json", "number,title,labels")
+    for issue in proposed:
+        if issue["number"] not in open_numbers:   # a feeder filed it; it waits until you add the queue label
+            rows.append((priority_of(l["name"] for l in issue["labels"]), "wait", issue["number"], "-", "-",
+                         f"proposed by a feeder: read it, then add the {LABELS['queue']} label to build it: {issue['title']}"))
     for n, j in sorted(jobs.items()):
         if n not in open_numbers and j["stage"] not in TERMINAL | WAITING:
             rows.append((9, "skip", n, j["id"], j["stage"], f"issue is closed or no longer labeled {LABELS['queue']}"))

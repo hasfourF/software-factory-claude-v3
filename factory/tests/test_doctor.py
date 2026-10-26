@@ -137,6 +137,36 @@ class Config(Project):
         self.assertEqual(2, len(warned))
         self.assertTrue(any(d.startswith("`bash`") for d in warned) and any(d.startswith("`python3`") for d in warned))
 
+    def feeders(self, **feeders):
+        cfg = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        cfg["feeders"].update(feeders)
+        self.put(self.repo, "factory/config.json", json.dumps(cfg))
+        self.check()
+        return [(l, w) for l, w, _ in self.lines if w.startswith("feeders")]
+
+    def test_the_shipped_feeders_are_fine(self):
+        self.assertEqual([], self.feeders())
+
+    def test_a_feeder_that_labels_factory_warns_and_says_so_when_unattended(self):
+        self.assertEqual([("warn", "feeders")], self.feeders(todo={"enabled": True, "label": "factory"}))
+        self.assertNotIn("nobody looks", self.lines[-1][2])
+        self.lines.clear()
+        self.feeders(ci={"enabled": True, "label": "factory"}, auto_create=True)
+        self.assertIn("nobody looks", self.lines[-1][2])
+
+    def test_a_disabled_feeder_cannot_warn(self):
+        self.assertEqual([], self.feeders(deps={"enabled": False, "label": "factory"}))
+
+    def test_bad_feeder_settings_fail(self):
+        got = self.feeders(ci={"enabled": True, "label": "everyone"}, max_open=-1,
+                           custom=[{"name": "Sentry!", "command": "x"}, {"name": "ok", "command": ""}])
+        self.assertEqual({"feeders.custom", "feeders.ci.label", "feeders.max_open"}, {w for l, w in got if l == "FAIL"})
+
+    def test_a_todo_pattern_that_matches_everything_or_does_not_compile_fails(self):
+        self.assertEqual([("FAIL", "feeders.todo.pattern")], self.feeders(todo={"enabled": True, "pattern": ".*"}))
+        self.lines.clear()
+        self.assertEqual([("FAIL", "feeders.todo.pattern")], self.feeders(todo={"enabled": True, "pattern": "(unclosed"}))
+
     def test_bad_auto_merge_settings_fail(self):
         cfg = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
         cfg["auto_merge"] = {"risks": ["low", "extreme"], "areas": "src"}

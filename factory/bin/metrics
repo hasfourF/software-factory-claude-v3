@@ -87,7 +87,7 @@ def summarize(directory):
         "id": job["id"], "stage": job["stage"], "outcome": outcome(job["stage"], decision, reworked),
         "risk": (job.get("intake") or {}).get("risk") or "?",
         "surfaces": (job.get("intake") or {}).get("surfaces") or [],
-        "areas": areas, "recipe": (job.get("intake") or {}).get("recipe") or "none", "rounds": job.get("round", 0), "gate_failures": failed, "reworked": reworked,
+        "origin": job.get("origin", "issue"), "areas": areas, "recipe": (job.get("intake") or {}).get("recipe") or "none", "rounds": job.get("round", 0), "gate_failures": failed, "reworked": reworked,
         "conflicts": len(list(directory.glob("conflict-*.md"))), "cost": job.get("cost_usd", 0.0),
         "minutes": minutes(job), "pr": job.get("pr"),
         "reason": reason(read(directory / "decision.md")) if decision == "ESCALATE" or job["stage"] == "needs-human" else None,
@@ -161,6 +161,7 @@ def build(rows, minimum):
         "by_risk": group(real, lambda r: [r["risk"]]), "by_area": group(real, lambda r: r["areas"]),
         "by_surface": group(real, lambda r: r["surfaces"] or ["none"]),
         "by_recipe": group(real, lambda r: [r["recipe"]]),
+        "by_origin": group(real, lambda r: [r["origin"]]),
     }
     for table in ("by_risk", "by_area"):
         for stats in report[table].values():
@@ -204,6 +205,8 @@ def show(r, minimum):
     table("By risk", r["by_risk"])
     table("By area", r["by_area"])
     table("By surface", r["by_surface"])
+    if "feeder" in r["by_origin"]:
+        table("By origin (issue = someone filed it, feeder = a source did)", r["by_origin"])
     if set(r["by_recipe"]) - {"none"}:
         table("By recipe (does following one help?)", r["by_recipe"])
     rp = r["replay"]

@@ -61,6 +61,7 @@ factory/bin/gate
 factory/bin/route
 factory/bin/doctor
 factory/bin/metrics
+factory/bin/feed
 factory/dashboard.html
 ```
 
@@ -69,7 +70,7 @@ SRC=repos/hasfourF/software-factory-claude-v3/contents
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && gh api -H "Accept: application/vnd.github.raw" "$SRC/$f" > "$f"
 done
-chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor factory/bin/metrics
+chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor factory/bin/metrics factory/bin/feed
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `CHANGELOG.md`, `LICENSE`,
@@ -126,6 +127,17 @@ tests; it must start and stop anything it starts. Skip it otherwise.
 - `gate.respect_codeowners`: on by default. If the project has a `CODEOWNERS` file,
   a change to a path that has an owner (other than a catch-all `*`) is never merged
   without a human. Tell the user.
+- `feeders`: where issues can come from besides the user. `ci` (the latest run of a
+  workflow on the base branch failed) is on; it only does anything when the user runs
+  `/factory feed`. `deps` (open Dependabot security alerts) and `todo` (committed
+  `TODO(factory): ...` comments) are off; turn one on only if the user wants it and,
+  for `deps`, if `gh api repos/{owner}/{repo}/dependabot/alerts` works for them. Leave every
+  source's `label` as `"proposed"`: the issue is filed but waits until the user reads it
+  and adds `factory`. `"factory"` skips that step and lets text from CI logs, code
+  comments or an alert go straight to agents that can commit; `doctor` warns, and with
+  `auto_create` it warns harder. Leave `auto_create` false. Custom sources (Sentry,
+  Linear, anything with an API) are a command in `feeders.custom` that prints a JSON
+  list of `{key, title, body, priority}`; offer to write one only if asked.
 - `auto_merge`: leave `risks` as all three and `areas` as `null` for now. They are
   the autonomy dial: `risks` limits which risk levels the factory may merge itself,
   and a list in `areas` (top-level directories) means a change touching any other
@@ -218,6 +230,8 @@ gh label create factory --color 5319E7 --description "Build this with the softwa
 gh label create factory:needs-info --color FBCA04 --description "The factory asked the author a question"
 gh label create factory:needs-human --color D93F0B --description "The factory needs a human decision on the PR"
 gh label create factory:plan --color 0E8A16 --description "Show me the plan before the factory builds this"
+gh label create factory:feed --color C5DEF5 --description "Filed by a factory feeder"
+gh label create factory:proposed --color BFD4F2 --description "A feeder filed this; read it, then add the factory label to build it"
 gh label create factory:plan-review --color FBCA04 --description "The factory posted its plan and is waiting for you"
 gh label create factory:plan-approved --color 0E8A16 --description "Build the plan as written"
 gh label create factory:p0 --color B60205 --description "Build first"
@@ -258,6 +272,9 @@ Then tell the user, in a few lines:
   bill to usage credits rather than the plan's included usage.
 - To start carefully, set `concurrency` to 1 in `factory/config.json` and read
   every PR until they trust it.
+- `/factory feed` shows what the factory can file by itself (a failing CI run on the base
+  branch, and whatever else is enabled), without filing anything. `--create` files it as
+  `factory:proposed` issues that wait for them.
 - Add the `factory:plan` label to an issue to read the factory's plan before it
   builds. It posts the spec on the issue; they comment to revise it, then add
   `factory:plan-approved` (or comment `/approve`) to build.
