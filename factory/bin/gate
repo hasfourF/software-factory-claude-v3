@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""The deterministic gate: does the job's branch pass the repo's checks?
+
+Usage:
+  gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
+  gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
+  gate --hook              builder SubagentStop hook: run the checks once, exit 2 on failure
+
+The gate runs the main checkout's factory/checks.sh inside the job's worktree,
+so a branch can't change the checks it is judged by. It fails when:
+
+  - checks.sh exits non-zero (it is retried `gate.retries` times first; a pass
+    on a retry is reported as flaky, not hidden);
+  - the branch modifies or deletes a file matching config.json `protected_paths`
+    (fnmatch patterns, where `*` also matches `/`; adding new files is fine);
+  - the branch adds a line that looks like a secret (`gate.scan_secrets`).
+
+It also raises FLAGS in checks.md, which never fail the gate but change what
+happens next: `large-diff`, `new-dependency` and `escalate-path` (in
+`gate.escalate_flags`) always go to a human; `security-path` adds the security
+review; `off-plan` tells reviewers the branch touched files the spec didn't list.
+"""
+
+import fnmatch
+import json
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+CONFIG = json.loads((FACTORY / "config.json").read_text())
+CHECKS = FACTORY / "checks.sh"
+TAIL = 80
+OFF_PLAN_FILES = 3
+SECRET_PATTERNS = [
+    ("private key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----")),
+    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
+    ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    ("hard-coded credential",
+     re.compile(r"""(?i)\w*(?:api[_-]?key|secret|token|passwd|password)\w*["']?\s*[:=]\s*["'][^"'\s]{12,}["']""")),
+]
+
+
+def die(msg):
+    print(f"gate: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def git(worktree, *args):
+    res = subprocess.run(["git", *args], cwd=worktree, capture_output=True, text=True)
+    if res.returncode != 0:
+        die(f"`git {' '.join(args)}` failed: {res.stderr.strip()}")
+    return res.stdout
+
+
+def matches(path, patterns):
+    return any(fnmatch.fnmatch(path, p) for p in patterns)
+
+
+def base_range():
+    return f"origin/{CONFIG['base_branch']}...HEAD"
+
+
+def changes(worktree):
+    """(status, path, original path) for every file the branch changes against the base."""
+    out = []
+    for line in git(worktree, "diff", "--name-status", base_range()).splitlines():
+        status, *paths = line.split("\t")
+        out.append((status[0], paths[-1], paths[0]))
+    return out
+
+
+def protected_changes(worktree):
+    """Existing files under protected_paths that the branch modified or deleted."""
+    return [f"{status} {old}" for status, _, old in changes(worktree)
+            if status != "A" and matches(old, CONFIG["protected_paths"])]
+
+
+def diff_lines(worktree):
+    total = 0
+    for line in git(worktree, "diff", "--numstat", base_range()).splitlines():
+        added, deleted, _ = line.split("\t", 2)
+        total += (int(added) if added.isdigit() else 0) + (int(deleted) if deleted.isdigit() else 0)
+    return total
+
+
+def find_secrets(worktree):
+    """`path:line kind` for each added line that matches a secret pattern. The match itself is never printed."""
+    hits, path, lineno = [], None, 0
+    for line in git(worktree, "diff", "-U0", "--no-color", base_range()).splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else None
+        elif line.startswith("@@"):
+            lineno = int(re.search(r"\+(\d+)", line).group(1)) - 1
+        elif line.startswith("+") and path:
+            lineno += 1
+            for kind, pattern in SECRET_PATTERNS:
+                if pattern.search(line):
+                    hits.append(f"{path}:{lineno} {kind}")
+                    break
+    return hits
+
+
+def planned(job_dir):
+    """Paths or globs in backticks under `## Files to touch` of spec.md, or None when the spec lists none."""
+    spec = job_dir / "spec.md"
+    if not spec.exists():
+        return None
+    m = re.search(r"^## Files to touch\n(.*?)(?=^## |\Z)", spec.read_text(), re.M | re.S)
+    found = set(re.findall(r"`([^`\s]+)`", m.group(1))) if m else set()
+    return found or None
+
+
+def run_checks(worktree, retries=0):
+    """(exit code, log, seconds, attempts that failed before the last one)."""
+    start = time.monotonic()
+    logs = []
+    for attempt in range(retries + 1):
+        res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True)
+        logs.append(res.stdout + res.stderr)
+        if res.returncode == 0:
+            break
+    return res.returncode, logs[-1], int(time.monotonic() - start), len(logs) - 1
+
+
+def gate(job_id, merge):
+    job_dir = FACTORY / "jobs" / job_id
+    job = json.loads((job_dir / "job.json").read_text())
+    worktree = job["worktree"]
+    if job["round"] < 1:
+        die(f"{job_id} hasn't started a build round")
+    round_dir = job_dir / f"round-{job['round']}"
+    settings = CONFIG.get("gate", {})
+    commit = git(worktree, "rev-parse", "HEAD").strip()
+    protected = protected_changes(worktree)
+    secrets = find_secrets(worktree) if settings.get("scan_secrets", True) else []
+    code, log, seconds, failed_first = run_checks(worktree, settings.get("retries", 0))
+    flaky = code == 0 and failed_first > 0
+    verdict = "PASS" if code == 0 and not protected and not secrets else "FAIL"
+
+    files = changes(worktree)
+    paths = [new for _, new, _ in files]
+    size = diff_lines(worktree)
+    flags = []
+    if size > settings.get("max_diff_lines", 10**9):
+        flags.append("large-diff")
+    if any(matches(Path(p).name, settings.get("dependency_files", [])) for p in paths):
+        flags.append("new-dependency")
+    if any(matches(p, CONFIG.get("always_escalate_paths", [])) for p in paths):
+        flags.append("escalate-path")
+    if any(matches(p, CONFIG.get("force_security_paths", [])) for p in paths):
+        flags.append("security-path")
+    plan = planned(job_dir)
+    unplanned = [p for p in paths if plan and not matches(p, plan)]
+    if len(unplanned) > OFF_PLAN_FILES:
+        flags.append("off-plan")
+
+    name = "merge-checks" if merge else "checks"
+    (round_dir / f"{name}.log").write_text(log)
+    tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
+    (round_dir / f"{name}.md").write_text(
+        f"GATE: {verdict}\nCOMMIT: {commit}\nFLAGS: {', '.join(flags) or 'none'}\n\n"
+        "## Protected paths\n"
+        + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
+        + "\n\n## Secrets\n"
+        + ("\n".join(f"- {s}" for s in secrets) if secrets else "None found in added lines.")
+        + f"\n\n## Size\n{size} lines changed in {len(paths)} files"
+        + (f" (limit {settings['max_diff_lines']})" if "large-diff" in flags else "") + "."
+        + "\n\n## Plan vs diff\n"
+        + ("The spec lists no files to touch." if plan is None else
+           "\n".join(f"- not in the spec: {p}" for p in unplanned) if unplanned else "Every changed file is in the spec.")
+        + (f"\n\n## Flaky\nchecks.sh failed {failed_first} time(s) before it passed. Treat the tests it ran as suspect."
+           if flaky else "")
+        + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
+    )
+    notes = [f"protected paths changed: {', '.join(protected)}"] if protected else []
+    notes += [f"{len(secrets)} possible secret(s)"] if secrets else []
+    notes += ["flaky: passed on retry"] if flaky else []
+    notes += [f"flags: {', '.join(flags)}"] if flags else []
+    print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"
+          + "".join(f", {n}" for n in notes) + ")")
+    sys.exit(0 if verdict == "PASS" else 1)
+
+
+def hook():
+    event = json.load(sys.stdin)
+    if event.get("stop_hook_active"):
+        sys.exit(0)  # one nudge per stop; the gate decides
+    with open(Path(event["agent_transcript_path"]).expanduser()) as f:
+        content = json.loads(f.readline())["message"]["content"]
+    prompt = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content)
+    job_id = prompt.split("Job: ", 1)[1].split(".", 1)[0]
+    job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
+    code, log, _, _ = run_checks(job["worktree"])
+    if code != 0:
+        tail = "\n".join(log.rstrip().splitlines()[-40:])
+        print(f"factory/checks.sh fails in your worktree (exit {code}). The gate will reject this "
+              f"build. Fix it, or write STATUS: BLOCKED in build.md if you can't.\n\n{tail}",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+def main(argv):
+    if argv == ["--hook"]:
+        hook()
+    elif len(argv) == 1 and not argv[0].startswith("-"):
+        gate(argv[0], merge=False)
+    elif len(argv) == 2 and argv[1] == "--merge":
+        gate(argv[0], merge=True)
+    else:
+        die(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

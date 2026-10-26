@@ -1,0 +1,83 @@
+{
+  "concurrency": 3,
+  "max_rounds": 3,
+  "base_branch": "main",
+  "merge_method": "merge",
+  "labels": {
+    "queue": "factory",
+    "needs_info": "factory:needs-info",
+    "needs_human": "factory:needs-human",
+    "plan": "factory:plan",
+    "plan_review": "factory:plan-review",
+    "plan_approved": "factory:plan-approved",
+    "priority_prefix": "factory:p"
+  },
+  "plan_review": "high",
+  "max_spec_revisions": 2,
+  "routing": {
+    "low":    { "builder": "sonnet", "code": "haiku" },
+    "medium": { "builder": "sonnet", "code": "sonnet" },
+    "high":   { "builder": "opus",   "code": "sonnet" }
+  },
+  "surface_reviewers": {
+    "ui": { "ux": "sonnet", "ui": "haiku" },
+    "security": { "security": "opus" }
+  },
+  "protected_paths": [
+    "factory/checks.sh",
+    "factory/setup.sh",
+    "factory/config.json",
+    "factory/bin/*",
+    ".github/workflows/*"
+  ],
+  "force_security_paths": [
+    "*auth*",
+    "*login*",
+    "*session*",
+    "*password*",
+    "*payment*",
+    "*billing*",
+    "*webhook*",
+    "*secret*",
+    "*token*",
+    "*.sql",
+    "*migrations/*"
+  ],
+  "always_escalate_paths": [
+    ".github/workflows/*",
+    "Dockerfile*",
+    "*migrations/*",
+    "*.tf",
+    "deploy/*"
+  ],
+  "gate": {
+    "retries": 1,
+    "max_diff_lines": 800,
+    "scan_secrets": true,
+    "dependency_files": [
+      "package.json",
+      "requirements*.txt",
+      "pyproject.toml",
+      "Pipfile",
+      "go.mod",
+      "Cargo.toml",
+      "Gemfile",
+      "composer.json"
+    ],
+    "escalate_flags": ["large-diff", "new-dependency", "escalate-path"]
+  },
+  "limits": {
+    "max_cost_usd_per_job": 5.0,
+    "max_cost_usd_per_run": 25.0,
+    "stage_timeout_minutes": 90
+  },
+  "post_merge": "report",
+  "notify": { "command": null },
+  "ports": { "base": 5100, "step": 10 },
+  "prices_usd_per_mtok": {
+    "claude-fable-5-1":  { "input": 10.0, "output": 50.0, "cache_write_5m": 12.5, "cache_write_1h": 20.0, "cache_read": 0.25 },
+    "claude-opus-5-5":   { "input": 4.0,  "output": 20.0, "cache_write_5m": 5.0,  "cache_write_1h": 8.0,  "cache_read": 0.20 },
+    "claude-sonnet-5-5": { "input": 2.0,  "output": 10.0, "cache_write_5m": 2.5,  "cache_write_1h": 4.0,  "cache_read": 0.20 },
+    "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
+  }
+}

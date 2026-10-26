@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Check that this project is ready to run the factory.
+
+Usage:
+  doctor                 run every check, including checks.sh on the base branch
+  doctor --skip-checks   skip running checks.sh (the slow one)
+
+Prints one line per check (ok, warn or FAIL) and exits 1 when any FAIL.
+"""
+
+import fnmatch
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+MIN_CLAUDE = (2, 1, 257)
+AGENT_KEYS = {"name", "description", "tools", "model", "hooks"}
+AGENTS = ["intake", "spec-writer", "builder", "reviewer-code", "reviewer-security",
+          "reviewer-ux", "reviewer-ui", "approver"]
+failures = 0
+
+
+def report(level, what, detail=""):
+    global failures
+    failures += level == "FAIL"
+    print(f"{level:<4}  {what}" + (f": {detail}" if detail else ""))
+
+
+def sh(*cmd, cwd=REPO):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+
+def version(text):
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def check_tools():
+    if sys.version_info >= (3, 10):
+        report("ok", "python3", sys.version.split()[0])
+    else:
+        report("FAIL", "python3", f"{sys.version.split()[0]}; the scripts need 3.10 or later")
+    if not shutil.which("claude"):
+        report("warn", "claude", "not on PATH; can't check the version (needs 2.1.257 or later)")
+    else:
+        v = version(sh("claude", "--version").stdout)
+        if v and v >= MIN_CLAUDE:
+            report("ok", "claude", ".".join(map(str, v)))
+        else:
+            report("FAIL", "claude", f"{v}; the intake agent needs 2.1.257 or later")
+    if not shutil.which("gh"):
+        report("FAIL", "gh", "not installed")
+        return None
+    auth = sh("gh", "auth", "status")
+    if auth.returncode != 0:
+        report("FAIL", "gh auth", "not signed in; run `gh auth login`")
+        return None
+    report("ok", "gh auth")
+    return True
+
+
+def check_config():
+    try:
+        config = json.loads((FACTORY / "config.json").read_text())
+    except (OSError, ValueError) as e:
+        report("FAIL", "factory/config.json", str(e))
+        return None
+    missing = [key for key in ("concurrency", "max_rounds", "base_branch", "merge_method", "labels", "routing",
+                               "surface_reviewers", "protected_paths", "prices_usd_per_mtok") if key not in config]
+    if missing:
+        report("FAIL", "factory/config.json", "missing " + ", ".join(f"`{k}`" for k in missing))
+        return None
+    report("ok", "factory/config.json")
+    for risk, route in config.get("routing", {}).items():
+        for role, model in route.items():
+            if model not in {"haiku", "sonnet", "opus", "fable"}:
+                report("warn", "routing", f"{risk}.{role} is {model!r}, not haiku, sonnet, opus or fable")
+    plan = config.get("plan_review", "never")
+    if plan not in {"never", "high", "medium", "always"}:
+        report("FAIL", "plan_review", f"{plan!r} isn't never, high, medium or always")
+    return config
+
+
+def check_repo(config):
+    base = config["base_branch"]
+    remote = sh("git", "ls-remote", "--exit-code", "--heads", "origin", base)
+    if remote.returncode != 0:
+        report("FAIL", f"origin/{base}", "doesn't exist on origin; push it first")
+    else:
+        report("ok", f"origin/{base}")
+    allowed = sh("gh", "api", "repos/{owner}/{repo}", "--jq",
+                 "{merge: .allow_merge_commit, squash: .allow_squash_merge, rebase: .allow_rebase_merge}")
+    if allowed.returncode == 0:
+        ok = json.loads(allowed.stdout).get({"merge": "merge", "squash": "squash", "rebase": "rebase"}[config["merge_method"]])
+        report("ok" if ok else "FAIL", f"merge_method {config['merge_method']}",
+               "" if ok else "the repo doesn't allow it")
+    have = sh("gh", "label", "list", "--limit", "200", "--json", "name")
+    if have.returncode == 0:
+        names = {l["name"] for l in json.loads(have.stdout)}
+        missing = [v for k, v in config["labels"].items() if k != "priority_prefix" and v not in names]
+        report("ok" if not missing else "FAIL", "labels",
+               "" if not missing else "missing " + ", ".join(missing) + " (see INSTALL.md for `gh label create`)")
+    ignored = sh("git", "check-ignore", "-q", "factory/jobs/x")
+    report("ok" if ignored.returncode == 0 else "FAIL", ".gitignore", "" if ignored.returncode == 0
+           else "add /factory/jobs/")
+    tracked = [p for p in config["protected_paths"] if "*" not in p and not (REPO / p).exists()]
+    report("ok" if not tracked else "warn", "protected_paths", "" if not tracked else
+           "no such file: " + ", ".join(tracked))
+    for pattern in config["protected_paths"]:
+        if "*" in pattern and not any(fnmatch.fnmatch(str(p.relative_to(REPO)), pattern)
+                                      for p in REPO.rglob("*") if ".git" not in p.parts and p.is_file()):
+            report("warn", "protected_paths", f"{pattern} matches no file yet")
+
+
+def check_agents():
+    before = failures
+    skill = REPO / ".claude/skills/factory/SKILL.md"
+    report("ok" if skill.exists() else "FAIL", ".claude/skills/factory/SKILL.md",
+           "" if skill.exists() else "missing")
+    for name in AGENTS:
+        path = REPO / f".claude/agents/{name}.md"
+        if not path.exists():
+            report("FAIL", f".claude/agents/{name}.md", "missing")
+            continue
+        m = re.match(r"---\n(.*?)\n---\n", path.read_text(), re.S)
+        keys = set(re.findall(r"^([A-Za-z_]+):", m.group(1), re.M)) if m else set()
+        extra = keys - AGENT_KEYS
+        if not m:
+            report("FAIL", f"{name}.md", "no frontmatter")
+        elif extra:
+            report("FAIL", f"{name}.md", f"unknown frontmatter keys {', '.join(sorted(extra))}; Claude Code ignores them silently")
+        elif "name" not in keys or "model" not in keys:
+            report("FAIL", f"{name}.md", "needs `name` and `model`")
+    if failures == before:
+        report("ok", "skill and agents")
+    # Files that exist on disk but are ignored or untracked never reach origin, so job worktrees won't have them.
+    shipped = [".claude/skills/factory", ".claude/agents", "factory/bin", "factory/config.json", "factory/checks.sh"]
+    ignored = [p for p in shipped if (REPO / p).exists() and sh("git", "check-ignore", "-q", p).returncode == 0]
+    untracked = [p for p in shipped if (REPO / p).exists() and p not in ignored
+                 and not sh("git", "ls-files", "--", p).stdout.strip()]
+    if ignored:
+        report("FAIL", "git ignores factory files", ", ".join(ignored) + " (a .gitignore rule such as `.claude` "
+               "hides them; add a `!` exception so they can be committed)")
+    elif untracked:
+        report("warn", "uncommitted factory files", ", ".join(untracked) + " (commit and merge them before the first run: "
+               "every job branches from origin)")
+    else:
+        report("ok", "factory files are tracked")
+
+
+def check_checks(config, skip):
+    checks = FACTORY / "checks.sh"
+    if "has no checks yet" in checks.read_text():
+        report("FAIL", "factory/checks.sh", "still the placeholder; fill in the project's real commands")
+        return
+    if (FACTORY / "setup.sh").exists():
+        report("ok", "factory/setup.sh")
+    else:
+        report("warn", "factory/setup.sh", "none; new worktrees get no install step before the builder starts")
+    if skip:
+        report("warn", "checks.sh on the base branch", "skipped")
+        return
+    base = config["base_branch"]
+    sh("git", "fetch", "origin", base)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "base"
+        added = sh("git", "worktree", "add", "--detach", str(tree), f"origin/{base}")
+        if added.returncode != 0:
+            report("FAIL", "checks.sh on the base branch", added.stderr.strip())
+            return
+        try:
+            setup = FACTORY / "setup.sh"
+            if setup.exists() and sh("bash", str(setup), cwd=tree).returncode != 0:
+                report("FAIL", "factory/setup.sh", f"fails in a fresh checkout of {base}")
+                return
+            res = sh("bash", str(checks), cwd=tree)
+        finally:
+            sh("git", "worktree", "remove", "--force", str(tree))
+    if res.returncode == 0:
+        report("ok", f"checks.sh passes on origin/{base}")
+    else:
+        tail = "\n      ".join((res.stdout + res.stderr).rstrip().splitlines()[-8:])
+        report("FAIL", f"checks.sh fails on origin/{base}", f"exit {res.returncode}\n      {tail}")
+
+
+def check_cost():
+    """Cost is read from Claude Code's transcripts, whose format isn't a documented interface."""
+    jobs = FACTORY / "jobs"
+    if not jobs.exists():
+        return
+    for path in sorted(jobs.glob("*/job.json")):
+        job = json.loads(path.read_text())
+        if job["stage"] in {"build", "gate", "review", "approve", "merging", "merged", "needs-human"} \
+                and job.get("agents") and job.get("cost_usd", 0) == 0:
+            report("warn", "cost tracking", f"{job['id']} ran agents but its cost is $0.00; "
+                   "the transcript format may have changed (`job sync` re-reads it)")
+            return
+    report("ok", "cost tracking")
+
+
+def main(argv):
+    skip = argv == ["--skip-checks"]
+    if argv and not skip:
+        print(__doc__.strip())
+        sys.exit(2)
+    if check_tools():
+        config = check_config()
+        if config:
+            check_repo(config)
+            check_agents()
+            check_checks(config, skip)
+            check_cost()
+    print("\n" + ("not ready" if failures else "ready") + (f": {failures} failing" if failures else ""))
+    sys.exit(1 if failures else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

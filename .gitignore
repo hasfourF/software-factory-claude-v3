@@ -1,0 +1,5 @@
+# Factory runtime state
+/factory/jobs/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,15 @@
+GATE: PASS
+COMMIT: 2934f5dc28593f1f995d5e319d2b2cbd5f678718
+
+## Protected paths
+None changed.
+
+## checks.sh
+Exit 0 in 0s. Last 80 lines of checks.log:
+
+```
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK
+```
