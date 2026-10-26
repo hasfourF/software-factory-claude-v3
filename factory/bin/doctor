@@ -154,6 +154,104 @@ def check_agents():
         report("ok", "factory files are tracked")
 
 
+OURS_SKILL = "factory"
+FACTORY_FILES = {"bin", "checks.sh", "setup.sh", "config.json", "dashboard.html", "jobs", "tests",
+                 "lessons.md", "backlog.md"}
+# What unattended agents run. A missing allow rule can leave a background agent waiting on a prompt nobody sees.
+NEEDED_COMMANDS = ["factory/bin/job queue", "bash factory/checks.sh", "git push -u origin factory/x",
+                   "git commit -m x", "gh pr create --draft"]
+
+
+def definition_name(path):
+    m = re.match(r"---\n(.*?)\n---\n", path.read_text(errors="replace"), re.S)
+    n = re.search(r"^name:\s*(\S+)", m.group(1), re.M) if m else None
+    return n.group(1) if n else path.parent.name if path.name == "SKILL.md" else path.stem
+
+
+def check_collisions():
+    """Skills or agents that share a name with the factory's but live in another file."""
+    ours = {f".claude/agents/{a}.md" for a in AGENTS} | {".claude/skills/factory/SKILL.md"}
+    names = set(AGENTS) | {OURS_SKILL}
+    home = Path.home() / ".claude"
+    found = []
+    for scope, root, level in (("project", REPO / ".claude", "FAIL"), ("user", home, "warn")):
+        for path in sorted([*root.glob("agents/*.md"), *root.glob("skills/*/SKILL.md")]):
+            if path.is_relative_to(REPO) and str(path.relative_to(REPO)) in ours:
+                continue
+            if definition_name(path) in names:
+                found.append((level, scope, path))
+    for level, scope, path in found:
+        where = path.relative_to(REPO) if scope == "project" else f"~/{path.relative_to(Path.home())}"
+        report(level, f"name clash in {scope} .claude", f"{where} defines `{definition_name(path)}`, a name the factory uses; "
+               "rename one of them" + ("" if scope == "project" else " (which wins is not something doctor can check)"))
+    if not found:
+        report("ok", "no skill or agent name clashes")
+
+
+def load_permissions():
+    """allow, deny, and the default mode, merged from the project, local and user settings files."""
+    allow, deny, mode = [], [], None
+    for path in (REPO / ".claude/settings.json", REPO / ".claude/settings.local.json",
+                 Path.home() / ".claude/settings.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        perms = data.get("permissions") or {}
+        allow += perms.get("allow") or []
+        deny += perms.get("deny") or []
+        mode = mode or perms.get("defaultMode")
+    return allow, deny, mode
+
+
+def rule_covers(rule, command):
+    """Does a `Bash(...)` permission rule cover this command? Prefix rules only: `Bash(git *)`, `Bash(git:*)`."""
+    if rule in {"Bash", "Bash(*)"}:
+        return True
+    m = re.fullmatch(r"Bash\((.*)\)", rule)
+    if not m:
+        return False
+    inner = re.sub(r"(:\*|\s\*|\*)$", "", m.group(1))
+    return bool(inner) and command.startswith(inner)
+
+
+def check_permissions():
+    allow, deny, mode = load_permissions()
+    blocked = [c for c in NEEDED_COMMANDS if any(rule_covers(r, c) for r in deny)]
+    if blocked:
+        report("FAIL", "permissions deny factory commands", "; ".join(blocked) + " (the factory can't run while these are denied)")
+    if mode == "bypassPermissions":
+        report("ok", "permissions", "bypassPermissions: agents won't wait for prompts")
+        return
+    missing = [c for c in NEEDED_COMMANDS if not any(rule_covers(r, c) for r in allow)]
+    if missing:
+        report("warn", "permissions", "no allow rule covers " + "; ".join(missing) + ". Unattended agents may stall "
+               "on prompts. See INSTALL.md for a minimal allowlist")
+    elif not blocked:
+        report("ok", "permissions allow the factory's commands")
+    hooks = []
+    for path in (REPO / ".claude/settings.json", REPO / ".claude/settings.local.json", Path.home() / ".claude/settings.json"):
+        try:
+            hooks += ((json.loads(path.read_text()).get("hooks") or {}).get("PreToolUse") or [])
+        except (OSError, ValueError):
+            pass
+    if hooks:
+        report("warn", "PreToolUse hooks", f"{len(hooks)} configured; make sure none block git push, gh or factory/bin")
+
+
+def check_layout():
+    factory = REPO / "factory"
+    stray = sorted(p.name for p in factory.iterdir() if p.name not in FACTORY_FILES) if factory.is_dir() else []
+    if stray:
+        report("warn", "factory/", "files the factory doesn't use: " + ", ".join(stray) + " (is this folder yours for something else?)")
+    agents, claude = REPO / "AGENTS.md", REPO / "CLAUDE.md"
+    if agents.exists() and claude.exists():
+        a, c = agents.read_text(), claude.read_text()
+        if "CLAUDE.md" not in a and len(c.splitlines()) > 2 * len(a.splitlines()):
+            report("warn", "AGENTS.md and CLAUDE.md", "the agents read AGENTS.md first, and CLAUDE.md is much longer and isn't "
+                   "referenced from it; point AGENTS.md at CLAUDE.md or merge them")
+
+
 def check_checks(config, skip):
     checks = FACTORY / "checks.sh"
     if "has no checks yet" in checks.read_text():
@@ -214,6 +312,9 @@ def main(argv):
         if config:
             check_repo(config)
             check_agents()
+            check_collisions()
+            check_permissions()
+            check_layout()
             check_checks(config, skip)
             check_cost()
     print("\n" + ("not ready" if failures else "ready") + (f": {failures} failing" if failures else ""))

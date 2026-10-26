@@ -23,6 +23,11 @@ Changes since ZazenCodes' v2, the version in their video.
   `Recommendations` section.** The code reviewer maps each criterion to a test.
 - `factory/bin/doctor`: checks the tools, config, labels, agents and that
   `checks.sh` passes on the base branch.
+- The installer and `doctor` account for a project that already uses Claude Code:
+  skill and agent name clashes (project and `~/.claude`), permission rules that
+  would stall or block unattended agents (with a minimal allowlist to propose),
+  `PreToolUse` hooks, an unrelated `factory/` folder, and `AGENTS.md` shadowing
+  `CLAUDE.md`.
 - `factory/setup.sh`: runs once in every new worktree.
 - Gate: retries flaky checks, scans added lines for secrets, flags large diffs,
   changed dependency manifests, escalate-paths, security-paths and files the

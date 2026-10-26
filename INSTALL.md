@@ -26,6 +26,16 @@ Stop and tell the user if any of these fail:
   library.
 - None of the files in step 1 already exist. If one does, show the user the
   clash and ask before overwriting.
+- No other skill or agent already uses a name the factory uses: `factory`,
+  `intake`, `spec-writer`, `builder`, `reviewer-code`, `reviewer-security`,
+  `reviewer-ux`, `reviewer-ui`, `approver`. Check the `name:` in every
+  `.claude/agents/*.md` and `.claude/skills/*/SKILL.md` in the project and in
+  `~/.claude/`, not only the file names. If one matches, show the user and ask
+  which to rename. If it is the factory's, the name must change in the agent file,
+  in `.claude/skills/factory/SKILL.md` and in the `AGENTS` list in
+  `factory/bin/doctor`; don't rename silently.
+- If a `factory/` folder already exists for something else, tell the user and
+  ask where the factory should go before copying into it.
 
 ## 1. Copy
 
@@ -118,7 +128,10 @@ replies:
   intake can tell what belongs.
 
 **`AGENTS.md`** (or `CLAUDE.md`, whichever the project uses; create `AGENTS.md`
-if neither exists). Every agent reads it. Make sure it says:
+if neither exists). Every agent reads it, `AGENTS.md` first. If both files exist,
+add what follows to the one the project actually maintains and make sure
+`AGENTS.md` points at `CLAUDE.md` (or the reverse), so the agents don't read a
+stub. Existing instructions stay as they are; only add. Make sure it says:
 
 - how to set up a fresh checkout (install dependencies, env files to copy);
 - how to start the dev server on a given port, if the project has one;
@@ -143,6 +156,34 @@ branches from `origin/<base_branch>`. If an existing rule ignores `.claude` (or
 and `!.claude/agents/` so the skill and agents can be committed. Check with
 `git check-ignore -v .claude/agents/intake.md`, which must print nothing.
 
+**Permissions.** The factory's agents run in the background, so a command that
+needs approval stalls the job until someone sees the prompt. Read the project's
+`.claude/settings.json`, `.claude/settings.local.json` and `~/.claude/settings.json`
+(permissions and `PreToolUse` hooks), then:
+
+- If `defaultMode` is `bypassPermissions`, or the rules below are already covered,
+  change nothing.
+- If a `deny` rule or a hook would block `git push`, `gh pr create` or
+  `factory/bin/*`, tell the user; the factory can't run until that changes.
+- Otherwise show the user this allowlist, plus the project's own check commands
+  (the ones in `factory/checks.sh`, and anything `AGENTS.md` tells builders to
+  run), and ask before writing it. Merge it into `.claude/settings.local.json`
+  (personal, not committed) without removing anything already there:
+
+```json
+{ "permissions": { "allow": [
+  "Bash(factory/bin/*)",
+  "Bash(bash factory/checks.sh*)",
+  "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git fetch*)",
+  "Bash(git add *)", "Bash(git commit *)", "Bash(git merge origin/*)",
+  "Bash(git push -u origin factory/*)", "Bash(git push origin factory/*)",
+  "Bash(gh pr create *)", "Bash(gh issue create *)"
+] } }
+```
+
+That scopes pushes to `factory/*` branches. It deliberately leaves out `gh api`
+and a bare `git push`.
+
 **Labels.** Create them on GitHub:
 
 ```bash
@@ -166,7 +207,10 @@ gh label create factory:p2 --color FBCA04 --description "Build when there is tim
    `factory/checks.sh` and `factory/setup.sh` pass on a clean checkout of the base
    branch. If checks.sh fails there, the factory can never pass a job: fix the
    script (not the project) or tell the user what's broken. Fix every FAIL line;
-   explain any `warn` to the user.
+   explain any `warn` to the user. It also reports name clashes with existing
+   skills and agents, permission rules that would stall or block the factory,
+   hooks, a `factory/` folder that isn't the factory's, and an `AGENTS.md` that
+   shadows a longer `CLAUDE.md`.
 2. `factory/bin/job queue` runs without an error.
 
 ## 4. Hand over
