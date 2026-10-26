@@ -36,12 +36,22 @@ other file.
   safeguards. Say why in plain words and what a better version of the request
   would look like.
 
+## Pick a recipe
+
+Your prompt ends with `Recipes:` and a list of this project's recipes: a name, then
+when it applies. A recipe is the project's own playbook for a common kind of change
+(add an endpoint, add a migration, add a flag). If the accepted scope is exactly that
+kind of change, name the recipe on the `RECIPE` line; the spec-writer and the builder
+will follow it. Otherwise write `none`. Choose at most one, and don't stretch a recipe
+over a change it wasn't written for: a wrong recipe is worse than none. Use only
+a name from the list.
+
 When the issue states `depends-on: #n`, treat that as the author's ordering
 note. It isn't yours to enforce.
 
 ## Rate
 
-Always write these lines, even for NEEDS-INFO and REJECT.
+Always write these lines, even for NEEDS-INFO and REJECT (`RECIPE: none` for those).
 
 `RISK`:
 
@@ -63,6 +73,7 @@ DECISION: ACCEPT | NEEDS-INFO | REJECT
 RISK: low | medium | high
 SURFACES: ui, security | none
 RESCOPED: yes | no
+RECIPE: <name from the list> | none
 
 ## Scope
 ACCEPT: what the builder is to build, concretely: the behaviour, the files or

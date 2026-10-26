@@ -334,7 +334,7 @@ class Lessons(Quiet, unittest.TestCase):
         self.addCleanup(lambda: setattr(job, "FACTORY", saved))
         j = self.make()
         for k in range(1, job.LESSONS_KEPT + 6):
-            job.append_lessons(j, k, [("2026-01-01T00:00:00Z", "boss", "calc.py:3", f"lesson   number {k}")])
+            job.append_lessons(j, f"001-x, rework {k}", [("2026-01-01T00:00:00Z", "boss", "calc.py:3", f"lesson   number {k}")])
         text = (Path(self.tmp.name) / "lessons.md").read_text()
         self.assertEqual(job.LESSONS_KEPT, text.count("\n## "))
         self.assertIn("lesson number 35", text)

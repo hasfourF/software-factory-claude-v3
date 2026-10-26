@@ -87,7 +87,7 @@ def summarize(directory):
         "id": job["id"], "stage": job["stage"], "outcome": outcome(job["stage"], decision, reworked),
         "risk": (job.get("intake") or {}).get("risk") or "?",
         "surfaces": (job.get("intake") or {}).get("surfaces") or [],
-        "areas": areas, "rounds": job.get("round", 0), "gate_failures": failed, "reworked": reworked,
+        "areas": areas, "recipe": (job.get("intake") or {}).get("recipe") or "none", "rounds": job.get("round", 0), "gate_failures": failed, "reworked": reworked,
         "conflicts": len(list(directory.glob("conflict-*.md"))), "cost": job.get("cost_usd", 0.0),
         "minutes": minutes(job), "pr": job.get("pr"),
         "reason": reason(read(directory / "decision.md")) if decision == "ESCALATE" or job["stage"] == "needs-human" else None,
@@ -160,6 +160,7 @@ def build(rows, minimum):
         "why_escalated": dict(Counter(r["reason"] for r in real if r["reason"])),
         "by_risk": group(real, lambda r: [r["risk"]]), "by_area": group(real, lambda r: r["areas"]),
         "by_surface": group(real, lambda r: r["surfaces"] or ["none"]),
+        "by_recipe": group(real, lambda r: [r["recipe"]]),
     }
     for table in ("by_risk", "by_area"):
         for stats in report[table].values():
@@ -203,6 +204,8 @@ def show(r, minimum):
     table("By risk", r["by_risk"])
     table("By area", r["by_area"])
     table("By surface", r["by_surface"])
+    if set(r["by_recipe"]) - {"none"}:
+        table("By recipe (does following one help?)", r["by_recipe"])
     rp = r["replay"]
     if rp["runs"]:
         print(f"\nReplays: {rp['runs']} run, " + ", ".join(f"{n} {k}" for k, n in sorted(rp["labels"].items()))

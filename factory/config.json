@@ -84,6 +84,9 @@
     "max_cost_usd_per_run": 25.0,
     "stage_timeout_minutes": 90
   },
+  "lessons": {
+    "curate_after": 20
+  },
   "post_merge": "report",
   "notify": { "command": null },
   "ports": { "base": 5100, "step": 10 },

@@ -22,7 +22,7 @@ FACTORY = REPO / "factory"
 MIN_CLAUDE = (2, 1, 257)
 AGENT_KEYS = {"name", "description", "tools", "model", "hooks"}
 AGENTS = ["intake", "spec-writer", "builder", "reviewer-code", "reviewer-security",
-          "reviewer-ux", "reviewer-ui", "approver"]
+          "reviewer-ux", "reviewer-ui", "approver", "recipe-writer", "lessons-curator"]
 failures = 0
 
 
@@ -165,8 +165,8 @@ def check_agents():
 
 
 OURS_SKILL = "factory"
-FACTORY_FILES = {"bin", "checks.sh", "setup.sh", "config.json", "dashboard.html", "jobs", "tests",
-                 "lessons.md", "backlog.md"}
+FACTORY_FILES = {"bin", "checks.sh", "setup.sh", "verify.sh", "config.json", "dashboard.html", "jobs", "tests",
+                 "lessons.md", "lessons.proposed.md", "backlog.md", "recipes"}
 # What unattended agents run. A missing allow rule can leave a background agent waiting on a prompt nobody sees.
 NEEDED_COMMANDS = ["factory/bin/job queue", "bash factory/checks.sh", "git push -u origin factory/x",
                    "git commit -m x", "gh pr create --draft"]
@@ -249,6 +249,21 @@ def check_permissions():
         report("warn", "PreToolUse hooks", f"{len(hooks)} configured; make sure none block git push, gh or factory/bin")
 
 
+def check_recipes():
+    directory = REPO / "factory/recipes"
+    if not directory.is_dir():
+        return
+    blank = [p.name for p in sorted(directory.glob("*.md"))
+             if not re.match(r"WHEN:\s*\S", p.read_text(errors="replace"))]
+    if blank:
+        report("warn", "recipes", "no `WHEN:` first line in " + ", ".join(blank) + "; intake can't tell when to use them")
+    waiting = sorted((directory / "drafts").glob("*.md")) if (directory / "drafts").is_dir() else []
+    if waiting:
+        report("warn", "recipe drafts", f"{len(waiting)} waiting for review in factory/recipes/drafts/ (never used until moved up)")
+    if not blank and not waiting:
+        report("ok", "recipes")
+
+
 def check_layout():
     factory = REPO / "factory"
     stray = sorted(p.name for p in factory.iterdir() if p.name not in FACTORY_FILES) if factory.is_dir() else []
@@ -325,6 +340,7 @@ def main(argv):
             check_collisions()
             check_permissions()
             check_layout()
+            check_recipes()
             check_checks(config, skip)
             check_cost()
     print("\n" + ("not ready" if failures else "ready") + (f": {failures} failing" if failures else ""))

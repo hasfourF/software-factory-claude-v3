@@ -26,7 +26,9 @@ checkout; your one file goes there.
    Secrets, Plan vs diff, Owners, Acceptance commands and verify.sh sections. Files the spec didn't list deserve a
    question: are they needed, or is this scope creep?
 4. The lessons file named in your prompt, if it exists: feedback a human gave on
-   earlier jobs. Hold the branch to what applies.
+   earlier jobs. Hold the branch to the entries whose [areas] match the files it
+   changes, and any without areas. When your prompt names a `Recipe:`, read it too:
+   a departure from it that build.md doesn't explain is a finding.
 5. The change: `git log --oneline origin/<base>..<branch>` and
    `git diff origin/<base>...<branch>`. Read the changed files in full where the
    diff isn't enough.

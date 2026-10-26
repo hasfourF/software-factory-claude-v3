@@ -145,6 +145,26 @@ class Config(Project):
         self.assertEqual(["FAIL", "FAIL"], [l for l, w, _ in self.lines if w.startswith("auto_merge")])
 
 
+class Recipes(Project):
+    def test_none_is_fine(self):
+        doctor.check_recipes()
+        self.assertEqual([], self.lines)
+
+    def test_a_recipe_needs_a_when_line_and_drafts_are_flagged(self):
+        self.put(self.repo, "factory/recipes/add-endpoint.md", "WHEN: adding a REST endpoint\n")
+        self.put(self.repo, "factory/recipes/vague.md", "## Steps\n1. do it\n")
+        self.put(self.repo, "factory/recipes/drafts/add-flag.md", "WHEN: x\n")
+        doctor.check_recipes()
+        self.assertEqual([("warn", "recipes"), ("warn", "recipe drafts")], [(l, w) for l, w, _ in self.lines])
+        self.assertIn("vague.md", self.lines[0][2])
+        self.assertNotIn("add-endpoint.md", self.lines[0][2])
+
+    def test_good_recipes_are_ok(self):
+        self.put(self.repo, "factory/recipes/add-endpoint.md", "WHEN: adding a REST endpoint\n")
+        doctor.check_recipes()
+        self.assertEqual(["ok"], [l for l, _, _ in self.lines])
+
+
 class Layout(Project):
     def test_foreign_files_in_factory_warn(self):
         self.put(self.repo, "factory/bin/job", "x")

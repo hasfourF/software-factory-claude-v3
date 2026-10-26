@@ -51,6 +51,8 @@ Copy these files to the same paths in the project, unchanged:
 .claude/agents/reviewer-ux.md
 .claude/agents/reviewer-ui.md
 .claude/agents/approver.md
+.claude/agents/recipe-writer.md
+.claude/agents/lessons-curator.md
 factory/config.json
 factory/checks.sh
 factory/setup.sh
@@ -201,12 +203,13 @@ needs approval stalls the job until someone sees the prompt. Read the project's
   "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git fetch*)",
   "Bash(git add *)", "Bash(git commit *)", "Bash(git merge origin/*)",
   "Bash(git push -u origin factory/*)", "Bash(git push origin factory/*)",
-  "Bash(gh pr create *)", "Bash(gh issue create *)"
+  "Bash(gh pr create *)", "Bash(gh issue create *)",
+  "Bash(gh pr view *)", "Bash(gh pr diff *)", "Bash(git show *)"
 ] } }
 ```
 
 That scopes pushes to `factory/*` branches. It deliberately leaves out `gh api`
-and a bare `git push`.
+and a bare `git push`. The last three are read-only; `/factory recipe` needs them.
 
 **Labels.** Create them on GitHub:
 
@@ -259,6 +262,17 @@ Then tell the user, in a few lines:
   builds. It posts the spec on the issue; they comment to revise it, then add
   `factory:plan-approved` (or comment `/approve`) to build.
 - `factory/bin/doctor` is the first thing to run when something looks wrong.
+- Teach it how the project does its common changes. `/factory recipe 41 44 52` drafts
+  a recipe (the project's own playbook: steps, files, tests, what's easy to forget)
+  from merged PRs that did the same kind of change. The draft lands in
+  `factory/recipes/drafts/`, which is never used; they read it and move it up to
+  `factory/recipes/` if it's right. Two or three recipes for the changes the project
+  makes most often are worth more than a long `AGENTS.md`. Don't write recipes for
+  them; offer to draft them from PRs they name.
+- `factory/lessons.md` fills itself from their reworks, their comments on merged
+  factory PRs and any reverts (`/factory learn`, also run at the end of every
+  `/factory run`). It will show as modified in the main checkout until they commit
+  it; `/factory lessons` proposes a tidy version when it grows.
 - Before trusting it with real issues, calibrate: `/factory replay list` shows
   past merged PRs it can rebuild offline, and `/factory replay <pr> ...` rebuilds
   three to five of them from the code as it was and compares each with what shipped.

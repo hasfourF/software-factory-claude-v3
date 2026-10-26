@@ -21,6 +21,8 @@ Usage:
   job guard <job> [--run <iso>]  stop a job (or the run) that went over a cost cap
   job stale                      jobs stuck in one stage for longer than the timeout
   job post-merge <job>           did CI on the base branch stay green after the merge?
+  job recipes                    the project's recipes (factory/recipes/*.md) and when each applies
+  job learn [<job>]              add reviewers' comments and reverts on merged PRs to factory/lessons.md
   job backlog                    turn the first `- [ ]` line of factory/backlog.md into a labeled issue
   job replay-list                merged PRs that make a fair test: they closed an issue and are small
   job replay-create <pr>         rebuild a merged PR's issue from a snapshot of the code before it, offline
@@ -371,6 +373,13 @@ def cost(job):
 # ---- Sync: fields derived from files ---------------------------------------
 
 
+def recipe_name(value):
+    """A recipe intake chose, if it names a file in factory/recipes/. Anything else (a path, a typo) is no recipe."""
+    name = (value or "").strip()
+    ok = re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) and (FACTORY / "recipes" / f"{name}.md").is_file()
+    return name if ok else None
+
+
 def sync(job):
     d = job_dir(job["id"])
     intake = d / "intake.md"
@@ -382,6 +391,7 @@ def sync(job):
             "risk": h.get("RISK"),
             "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
                          if s.strip() and s.strip() != "none"],
+            "recipe": recipe_name(h.get("RECIPE")),
         }
     if job["round"]:
         rd = round_dir(job)
@@ -898,20 +908,103 @@ def cmd_merge(job):
     print(f"{job['id']}: merged PR #{job['pr']}")
 
 
-def append_lessons(job, k, notes):
-    """Keep the operator's feedback in factory/lessons.md, which builders and reviewers read on later jobs."""
+def append_lessons(job, heading, notes, areas=()):
+    """Keep feedback in factory/lessons.md, which builders and reviewers read on later jobs.
+
+    Each entry names the areas of the code the job touched, so an agent can apply the entries that match what it is
+    changing. A note whose opening words are already in the file is skipped, so learning twice adds nothing.
+    """
     path = FACTORY / "lessons.md"
-    head = ("# Lessons\n\nFeedback you gave on escalated jobs, newest last. Builders and reviewers read this "
-            "before they start. Edit it freely: delete what no longer applies and turn repeats into rules.\n")
+    head = ("# Lessons\n\nFeedback from your reviews, reworks and reverts, newest last. Builders and reviewers read this "
+            "before they start and apply the entries whose [areas] match the files they change. Edit it freely: delete "
+            "what no longer applies and turn repeats into rules (`/factory lessons` proposes a tidy version).\n")
     old = path.read_text() if path.exists() else head
     intro, *entries = re.split(r"(?m)^(?=## )", old)
-    lines = [f"## {job['id']}, rework {k} ({now()[:10]})"]
+    lines = []
     for _, _, where, body in sorted(notes):
         one_line = " ".join(body.split())
+        if one_line[:80] and one_line[:80] in " ".join(old.split()):
+            continue
         lines.append(f"- {where + ': ' if where else ''}{one_line[:300]}")
-    entries.append("\n".join(lines) + "\n\n")
+    if not lines:
+        return 0
+    tag = f" [{', '.join(areas)}]" if areas else ""
+    entries.append("\n".join([f"## {heading} ({now()[:10]}){tag}", *lines]) + "\n\n")
     path.write_text(intro.rstrip() + "\n\n" + "".join(e if e.endswith("\n\n") else e.rstrip() + "\n\n"
                                                       for e in entries[-LESSONS_KEPT:]))
+    return len(lines)
+
+
+def job_areas(job):
+    """Top-level directories the job changed, from the gate's last changed-files.txt."""
+    rounds = sorted(job_dir(job["id"]).glob("round-*"))
+    files = (rounds[-1] / "changed-files.txt").read_text().split() if rounds and (rounds[-1] / "changed-files.txt").exists() else []
+    return sorted({f.split("/", 1)[0] if "/" in f else "." for f in files})
+
+
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def find_revert(oid):
+    """(short sha, subject, body) of a commit on the base branch that reverts <oid>, or None."""
+    res = run(["git", "log", f"origin/{BASE}", "-1", "--format=%h%x1f%s%x1f%b", f"--grep=This reverts commit {oid}"],
+              check=False)
+    return tuple(res.stdout.strip().split("\x1f", 2)) if res.stdout.strip() else None
+
+
+def learn_from(job):
+    """New lessons from a merged job's PR: what trusted people said on it, and whether it was reverted."""
+    pr = gh_json("pr", "view", str(job["pr"]), "--json", "comments,reviews,mergeCommit")
+    repo = gh_json("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
+    inline = gh_json("api", f"repos/{repo}/pulls/{job['pr']}/comments")
+    raw = [(c["createdAt"], c["author"]["login"], None, c["body"], c.get("authorAssociation")) for c in pr["comments"]]
+    raw += [(r["submittedAt"], r["author"]["login"], None, r["body"], r.get("authorAssociation")) for r in pr["reviews"]]
+    raw += [(c["created_at"], c["user"]["login"], f"{c['path']}:{c.get('line') or c.get('original_line')}", c["body"],
+             c.get("author_association")) for c in inline]
+    me = operator()
+    notes = [(when, who, where, body) for when, who, where, body, assoc in raw
+             if (who == me or assoc in TRUSTED_ASSOCIATIONS) and not who.endswith("[bot]")
+             and not body.startswith(MARKER) and len(body.strip()) >= 20]   # a trusted voice, not "lgtm"
+    areas = job_areas(job)
+    added = append_lessons(job, f"{job['id']}, review of PR #{job['pr']}", notes, areas)
+    reverted = 0
+    oid = (pr.get("mergeCommit") or {}).get("oid")
+    found = find_revert(oid) if oid else None
+    if found and not job.get("reverted"):
+        sha, subject, body = found
+        why = " ".join(body.split())[:240]
+        reverted = append_lessons(job, f"{job['id']}, REVERTED", [("", "", None,
+                                  f"PR #{job['pr']} was reverted by {sha} ({subject}). {why}".strip())], areas)
+        job["reverted"] = sha
+    job["learned"] = now()
+    return added, reverted
+
+
+def cmd_learn(arg=None):
+    run(["git", "fetch", "-q", "origin"], check=False)
+    todo = [resolve(arg)] if arg else [j for j in all_jobs() if j["stage"] == "merged" and j["pr"]
+                                       and not is_replay(j) and not j.get("learned")]
+    added = reverts = 0
+    for j in todo:
+        try:
+            a, r = learn_from(j)
+        except Refused as e:
+            print(f"{j['id']}: skipped: {e}", file=sys.stderr)
+            continue
+        save(j)
+        added, reverts = added + a, reverts + r
+    print(f"learn: {added} new lesson(s) and {reverts} revert(s) from {len(todo)} merged job(s)")
+    path = FACTORY / "lessons.md"
+    count = path.read_text().count("\n## ") if path.exists() else 0
+    if count > cfg("lessons", "curate_after", default=20):
+        print(f"factory/lessons.md has {count} entries; run /factory lessons for a tidy version")
+
+
+def cmd_recipes():
+    directory = FACTORY / "recipes"
+    for path in sorted(directory.glob("*.md")) if directory.is_dir() else []:
+        when = header(path).get("WHEN")
+        print(f"- {path.stem}: {when or '(no WHEN line)'}")
 
 
 def cmd_rework(job):
@@ -944,7 +1037,7 @@ def cmd_rework(job):
     for when, _, where, body in sorted(notes):
         lines += [f"## {where or 'General'} ({when})", "", body.strip(), ""]
     (d / f"rework-{k}.md").write_text("\n".join(lines))
-    append_lessons(job, k, notes)
+    append_lessons(job, f"{job['id']}, rework {k}", notes, job_areas(job))
     save(advance(sync(job), "build"))
     print(f"{job['id']}: rework-{k}.md, round {job['round']}")
 
@@ -1287,6 +1380,10 @@ def main(argv):
             cmd_stale()
         elif cmd == "post-merge" and len(args) == 1:
             cmd_post_merge(resolve(args[0]))
+        elif cmd == "recipes" and not args:
+            cmd_recipes()
+        elif cmd == "learn" and len(args) <= 1:
+            cmd_learn(args[0] if args else None)
         elif cmd == "backlog" and not args:
             cmd_backlog()
         elif cmd == "replay-list" and not args:

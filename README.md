@@ -69,6 +69,9 @@ One Claude Code session orchestrates every job, `concurrency` at a time
 /factory rework <n>   send an escalated job back to the builder with your PR comments
 /factory replay <pr>  rebuild a past merged PR offline and compare it with what shipped
 /factory metrics      how much to trust it, and where
+/factory recipe <pr>  draft a recipe from merged PRs that did the same kind of change
+/factory learn        add review comments and reverts on merged PRs to lessons.md
+/factory lessons      propose a tidied lessons.md
 ```
 
 You approve by merging the PR on GitHub.
@@ -89,6 +92,32 @@ The spec lists numbered acceptance criteria (AC1, AC2, ...), the files it expect
 to change, and a separate **Recommendations** section for things worth doing that
 it did not put in scope. The code reviewer later maps each AC to a test, and the
 gate compares the real diff with the planned files.
+
+## Teach it your project
+
+Two things make the factory build like a member of your team instead of a stranger.
+
+**Recipes.** A recipe is your project's playbook for a kind of change you make often:
+add an endpoint, add a migration, add a feature flag. It lists the steps in order, the
+files, the tests and the part that's easy to forget. Intake matches an issue to a
+recipe, and then the spec-writer, the builder and the code reviewer all work from it.
+`metrics` shows whether jobs that followed a recipe merged more often than the rest.
+
+You don't write them. `/factory recipe 41 44 52` drafts one from merged PRs that did
+the same kind of change (several beat one: it keeps what they share). The draft goes to
+`factory/recipes/drafts/`, which is never used. Read it, fix it, and move it to
+`factory/recipes/`. A recipe steers every later build of that kind, so a person
+approves each one.
+
+**Lessons.** `factory/lessons.md` is read by every builder and reviewer. It fills from
+three places: your comments when you `/factory rework`, what the repo's owners, members
+and collaborators said on a factory PR once it merged, and reverts (the strongest
+signal there is). Each entry is tagged with the areas of the code it touched, so
+agents apply the ones that match. Comments from anyone else, bots and one-word
+approvals are ignored, because this file steers every agent. `/factory learn` does it
+on demand and it runs after each `/factory run`. When the file grows,
+`/factory lessons` proposes a deduplicated version grouped by area, in
+`lessons.proposed.md`; you replace `lessons.md` with it yourself.
 
 ## Checks beyond `checks.sh`
 
@@ -188,7 +217,8 @@ factory/
   bin/doctor                  is this project ready to run the factory?
   bin/metrics                 auto-merge rate, cost, reverts; which areas have earned trust
   setup.sh                    prepares a fresh worktree (the installer fills it in)
-  lessons.md                  your rework feedback, read by builders and reviewers (created on first rework)
+  lessons.md                  feedback from your reworks, reviews and reverts, read by builders and reviewers
+  recipes/                    your playbooks for common kinds of change (drafts/ is never used)
   backlog.md                  optional: lines `/factory next` turns into issues
   dashboard.html              the board
   tests/                      unit tests for job and gate (not copied by the installer)

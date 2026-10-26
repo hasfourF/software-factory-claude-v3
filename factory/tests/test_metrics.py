@@ -131,6 +131,25 @@ class Trust(Jobs):
         self.assertIn('"auto_merge": { "risks": ["low", "medium", "high"], "areas": ["src"] }', out.getvalue())
 
 
+class Recipes(Jobs):
+    def test_jobs_are_grouped_by_the_recipe_intake_chose(self):
+        for recipe, reworked in (("add-endpoint", False), ("add-endpoint", False), (None, True)):
+            d = self.add(reworked=reworked)
+            job = json.loads((d / "job.json").read_text())
+            job["intake"]["recipe"] = recipe
+            (d / "job.json").write_text(json.dumps(job))
+        by = self.report()["by_recipe"]
+        self.assertEqual({"add-endpoint", "none"}, set(by))
+        self.assertEqual((2, 1.0, 1, 0.0), (by["add-endpoint"]["jobs"], by["add-endpoint"]["auto_rate"], by["none"]["jobs"], by["none"]["auto_rate"]))
+
+    def test_the_recipe_table_only_shows_when_a_recipe_was_used(self):
+        self.add()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            metrics.show(self.report(), 5)
+        self.assertNotIn("By recipe", out.getvalue())
+
+
 class Replays(Jobs):
     def test_replays_are_reported_apart_and_never_count_as_jobs(self):
         self.add()

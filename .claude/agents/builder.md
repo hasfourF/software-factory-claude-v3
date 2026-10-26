@@ -31,7 +31,11 @@ other jobs.
 2. `<job folder>/spec.md`: what to build. The acceptance criteria (AC1, AC2, ...)
    are your test plan. Ignore its Recommendations section.
 3. The lessons file named in your prompt, if it exists: feedback a human gave on
-   earlier jobs. Follow what applies.
+   earlier jobs. Follow the entries whose [areas] match the files you change, and any
+   without areas.
+   When your prompt names a `Recipe:`, read it and follow it: it is how this project
+   does this kind of change. If the spec and the recipe disagree, the spec wins; say so
+   in build.md.
 4. When you are resumed after a review round, every `review-*.md` in the round
    folder the message names, and `checks.md` there. Address each finding in a
    `VERDICT: CHANGES` file. Notes in `VERDICT: PASS` files are optional.

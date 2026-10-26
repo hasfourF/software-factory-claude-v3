@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory issue <n>, /factory next, /factory <feature>, /factory rework <n>, /factory replay <pr>, or /factory metrics. The session that runs it becomes the orchestrator of the intake → spec → build → gate → review → approve pipeline for every open `factory` issue.
+description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory issue <n>, /factory next, /factory <feature>, /factory rework <n>, /factory replay <pr>, /factory metrics, /factory learn, /factory lessons, or /factory recipe <pr>. The session that runs it becomes the orchestrator of the intake → spec → build → gate → review → approve pipeline for every open `factory` issue.
 ---
 
 # Factory
@@ -62,8 +62,12 @@ approver (opus) ── APPROVE  → job merge: sync with main, gate again, gh pr
 Every agent prompt starts with the job's identity, so cost and hooks can find
 it. `Role` is the agent's name.
 
-- Intake: `Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Role: intake.`
+- Intake: `Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Role: intake.` Then, if
+  `factory/bin/job recipes` prints anything, a new line `Recipes:` and its output.
 - Every other agent: `Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Worktree: <worktree>. Branch: <branch>. Base: <base_branch>. Lessons: <repo>/factory/lessons.md. Role: <agent>.`
+
+When `job.json` has `intake.recipe`, add ` Recipe: <repo>/factory/recipes/<name>.md.` to the
+prompts of `spec-writer`, `builder` and `reviewer-code`, and to the builder's resume messages.
 
 Below, `<paths>` stands for the second form. Append what the step says. With `n`
 the job's number (`003` → 3), the dev-server ports are the builder `base + step*n`,
@@ -83,7 +87,10 @@ reviewer-ux `+1`, reviewer-ui `+2` (`ports` in config.json), appended as ` Port:
 4. Run up to `concurrency` jobs at once, each through **One job**, as their
    agents run in the background. When one finishes or parks, start the next row.
    Keep going until no `new` or `resume` rows are left.
-5. Finish with **Report**.
+5. `factory/bin/job learn` reads the trusted comments and any reverts on PRs that
+   merged since the last run and adds them to `factory/lessons.md`. Say how many it
+   added, and tell the user if it says the file needs tidying.
+6. Finish with **Report**.
 
 ### /factory issue <n>
 
@@ -98,6 +105,31 @@ run `/factory issue <n>` with the number it prints.
 
 `factory/bin/job backlog` turns the first unchecked line of `factory/backlog.md`
 into a labeled issue and prints its number. Run `/factory issue <n>`.
+
+### /factory learn
+
+`factory/bin/job learn` (or `learn <job>` for one). It adds what trusted people (the
+operator and the repo's owners, members and collaborators) said on merged factory PRs,
+and any revert of one, to `factory/lessons.md`, tagged with the areas the job touched.
+Report the counts. The file is in the main checkout and shows as modified until the
+user commits it; say so.
+
+### /factory lessons
+
+Spawn `lessons-curator` with `Job: lessons. Job folder: <repo>/factory/. Role:
+lessons-curator. Repo: <repo>.` When it finishes, show the user how many rules it
+proposed and tell them to compare `factory/lessons.proposed.md` with `lessons.md` and
+replace it themselves. Never replace `lessons.md` yourself.
+
+### /factory recipe <pr> [<pr>...]
+
+Teach the factory a kind of change the project makes often. The PRs must be merged and
+should all be the same kind of change; several give a better recipe than one. Spawn
+`recipe-writer` with `Job: recipe. Job folder: <repo>/factory/. Role: recipe-writer.
+Repo: <repo>. PRs: <numbers>.` It writes `factory/recipes/drafts/<name>.md`. Show the
+user the draft's `WHEN` line and path, and tell them to read it and, if it is right,
+move it to `factory/recipes/<name>.md`. A recipe in `drafts/` is never used. Never move
+it yourself: a recipe steers every later build of that kind.
 
 ### /factory metrics
 

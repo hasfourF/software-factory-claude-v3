@@ -75,6 +75,18 @@ Changes since ZazenCodes' v2, the version in their video.
 - **CODEOWNERS.** A path with an owner raises `owned-path`, which always goes to a
   human; rules come from the base branch.
 
+- **Recipes.** `factory/recipes/<name>.md` is the project's playbook for a kind of change.
+  Intake picks at most one (`RECIPE:` in intake.md, validated against the files), and
+  the spec-writer, builder and code reviewer follow it. `/factory recipe <pr>...` drafts
+  one from merged PRs into `factory/recipes/drafts/`, which is never used until a human
+  moves it. `metrics` reports results by recipe.
+- **Learning loop.** `job learn` (and `/factory learn`, run after every `/factory run`)
+  adds comments by the repo's owners, members, collaborators and the operator on merged
+  factory PRs, and reverts, to `lessons.md`. Bots, strangers, the factory's own comments
+  and one-word replies are left out; repeats are skipped; each entry carries the areas
+  it touched. `/factory lessons` proposes a deduplicated, grouped version in
+  `lessons.proposed.md` for a human to adopt.
+
 ### Changed
 
 - `protected_paths` also covers `factory/bin/*`, `factory/setup.sh` and
