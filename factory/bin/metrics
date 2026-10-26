@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""How well is the factory doing on this project, and where has it earned more trust?
+
+Usage:
+  metrics                 tables from factory/jobs/
+  metrics --json          the same numbers as JSON
+  metrics --github        also count merged jobs that were later reverted (asks GitHub)
+  metrics --min N         jobs an area or risk needs before it can be called earned (default 5)
+
+Reads the job folders, so it knows only the jobs run on this machine. A job's
+area is the top-level directory of each file it changed (round-N/changed-files.txt,
+written by the gate; older jobs count as `?`).
+
+An auto-merge is a job the approver merged with no human rework. A job a human
+merged, or that needed a rework round, is not one. Reverts count against an area
+whatever the approver said.
+
+An area is *earned* when it has --min decided jobs, at least 80% auto-merged, and
+no reverts. Put earned areas in config.json `auto_merge.areas` to let only those
+merge without a human; anything touching another directory then waits for you.
+Replays (`job replay-create`) are reported on their own and never count here.
+"""
+
+import json
+import re
+import statistics
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+JOBS = FACTORY / "jobs"
+EARNED_RATE = 0.8
+CLOSED = {"merged", "needs-human"}  # stages where the factory has made its call
+
+
+def read(path):
+    return path.read_text() if path.exists() else ""
+
+
+def first_line(path):
+    return read(path).split("\n", 1)[0].strip()
+
+
+def area(path):
+    return path.split("/", 1)[0] if "/" in path else "."
+
+
+def minutes(job):
+    if not job.get("ended"):
+        return None
+    t = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return (t(job["ended"]) - t(job["started"])).total_seconds() / 60
+
+
+def reason(text):
+    """Why a job went to a human, from the words of decision.md."""
+    t = text.lower()
+    for pattern, name in (("cost", "cost cap"), ("repeated", "repeated failure"), ("same way", "repeated failure"),
+                          ("flagged", "gate flag"), ("builder is blocked", "builder blocked"),
+                          ("rounds exhausted", "rounds used up"), ("gate failed", "gate failed"),
+                          ("conflicts with", "merge conflict"), ("merge failed", "merge failed")):
+        if pattern in t:
+            return name
+    return "approver's call"
+
+
+def outcome(stage, decision, reworked):
+    if stage == "merged":
+        return "auto-merged" if decision == "APPROVE" and not reworked else "merged by a human"
+    return {"needs-human": "waiting on a human", "rejected": "rejected", "abandoned": "PR closed",
+            "needs-info": "waiting on the author", "spec-review": "waiting on a plan review"}.get(stage, "in flight")
+
+
+def summarize(directory):
+    job = json.loads((directory / "job.json").read_text())
+    decision = first_line(directory / "decision.md") or None
+    reworked = bool(list(directory.glob("rework-*.md")))
+    rounds = sorted(directory.glob("round-*"))
+    failed = sum(1 for r in rounds if first_line(r / "checks.md") == "GATE: FAIL")
+    files = read(rounds[-1] / "changed-files.txt").split() if rounds else []
+    areas = sorted({area(f) for f in files}) or ["?"]
+    return {
+        "id": job["id"], "stage": job["stage"], "outcome": outcome(job["stage"], decision, reworked),
+        "risk": (job.get("intake") or {}).get("risk") or "?",
+        "surfaces": (job.get("intake") or {}).get("surfaces") or [],
+        "areas": areas, "rounds": job.get("round", 0), "gate_failures": failed, "reworked": reworked,
+        "conflicts": len(list(directory.glob("conflict-*.md"))), "cost": job.get("cost_usd", 0.0),
+        "minutes": minutes(job), "pr": job.get("pr"),
+        "reason": reason(read(directory / "decision.md")) if decision == "ESCALATE" or job["stage"] == "needs-human" else None,
+        "reverted": False, "replay": job.get("replay"),
+    }
+
+
+def reverted_prs(rows):
+    """PRs whose merge commit a later `git revert` named on the base branch."""
+    base = json.loads(read(FACTORY / "config.json"))["base_branch"]
+    hit = set()
+    for r in rows:
+        if r["stage"] != "merged" or not r["pr"]:
+            continue
+        view = subprocess.run(["gh", "pr", "view", str(r["pr"]), "--json", "mergeCommit"], cwd=REPO,
+                              capture_output=True, text=True)
+        oid = (json.loads(view.stdout).get("mergeCommit") or {}).get("oid") if view.returncode == 0 else None
+        if oid and subprocess.run(["git", "log", f"origin/{base}", "-1", "--format=%h", f"--grep=This reverts commit {oid}"],
+                                  cwd=REPO, capture_output=True, text=True).stdout.strip():
+            hit.add(r["id"])
+    return hit
+
+
+def rate(n, d):
+    return n / d if d else None
+
+
+def pct(x):
+    return "-" if x is None else f"{x:.0%}"
+
+
+def group(rows, key):
+    """{name: stats} where a job counts once under each name key() gives it."""
+    buckets = defaultdict(list)
+    for r in rows:
+        for name in key(r):
+            buckets[name].append(r)
+    out = {}
+    for name, items in sorted(buckets.items()):
+        decided = [r for r in items if r["stage"] in CLOSED]
+        auto = [r for r in decided if r["outcome"] == "auto-merged"]
+        out[name] = {"jobs": len(items), "decided": len(decided), "auto_merged": len(auto),
+                     "auto_rate": rate(len(auto), len(decided)), "reverted": sum(r["reverted"] for r in items),
+                     "avg_rounds": statistics.mean(r["rounds"] for r in items), "cost": sum(r["cost"] for r in items)}
+    return out
+
+
+def verdict(stats, minimum):
+    if stats["reverted"] or (stats["decided"] >= minimum and stats["auto_rate"] < 0.5):
+        return "keep a human on it"
+    if stats["decided"] < minimum:
+        return f"needs {minimum - stats['decided']} more"
+    return "earned" if stats["auto_rate"] >= EARNED_RATE else "not yet"
+
+
+def build(rows, minimum):
+    real = [r for r in rows if not r["replay"]]
+    merged = [r for r in real if r["stage"] == "merged"]
+    done = [r for r in real if r["stage"] in CLOSED]
+    times = [r["minutes"] for r in merged if r["minutes"] is not None]
+    report = {
+        "jobs": len(real), "outcomes": dict(Counter(r["outcome"] for r in real)),
+        "auto_merge_rate": rate(sum(r["outcome"] == "auto-merged" for r in done), len(done)),
+        "cost_total": round(sum(r["cost"] for r in real), 2),
+        "cost_per_merged": round(sum(r["cost"] for r in merged) / len(merged), 2) if merged else None,
+        "median_minutes_to_merge": round(statistics.median(times)) if times else None,
+        "avg_rounds_per_merged": round(statistics.mean(r["rounds"] for r in merged), 1) if merged else None,
+        "gate_failures": sum(r["gate_failures"] for r in real), "conflicts": sum(r["conflicts"] for r in real),
+        "reverted": sum(r["reverted"] for r in real),
+        "why_escalated": dict(Counter(r["reason"] for r in real if r["reason"])),
+        "by_risk": group(real, lambda r: [r["risk"]]), "by_area": group(real, lambda r: r["areas"]),
+        "by_surface": group(real, lambda r: r["surfaces"] or ["none"]),
+    }
+    for table in ("by_risk", "by_area"):
+        for stats in report[table].values():
+            stats["verdict"] = verdict(stats, minimum)
+    report["earned_areas"] = [a for a, s in report["by_area"].items() if s["verdict"] == "earned" and a != "?"]
+    results = [r["replay"]["result"] for r in rows if r["replay"] and r["replay"].get("result")]
+    report["replay"] = {
+        "runs": len(results), "labels": dict(Counter(x["label"] for x in results)),
+        "equivalent_rate": rate(sum(x["label"] == "equivalent" for x in results), len(results)),
+        "avg_recall": round(statistics.mean(x["recall"] for x in results), 2) if results else None,
+        "cost": round(sum(x["cost_usd"] for x in results), 2),
+    }
+    return report
+
+
+def table(title, stats):
+    if not stats:
+        return
+    print(f"\n{title}")
+    width = max(len(n) for n in stats)
+    print(f"  {'':<{width}}  jobs  decided  auto  reverted  rounds  cost    verdict")
+    for name, s in stats.items():
+        print(f"  {name:<{width}}  {s['jobs']:>4}  {s['decided']:>7}  {pct(s['auto_rate']):>4}  {s['reverted']:>8}  "
+              f"{s['avg_rounds']:>6.1f}  ${s['cost']:<6.2f} {s.get('verdict', '')}")
+
+
+def show(r, minimum):
+    if not r["jobs"] and not r["replay"]["runs"]:
+        print("No jobs yet. Run `/factory run`, or calibrate first with `/factory replay`.")
+        return
+    print(f"Jobs: {r['jobs']}   total ${r['cost_total']:.2f}   per merged PR "
+          f"{'-' if r['cost_per_merged'] is None else '$%.2f' % r['cost_per_merged']}   median time to merge "
+          f"{'-' if r['median_minutes_to_merge'] is None else '%dm' % r['median_minutes_to_merge']}   "
+          f"rounds per merged PR {r['avg_rounds_per_merged'] or '-'}")
+    if r["outcomes"]:
+        print("Outcomes: " + ", ".join(f"{n} {k}" for k, n in sorted(r["outcomes"].items(), key=lambda kv: -kv[1])))
+        print(f"Auto-merge rate (of jobs the factory decided): {pct(r['auto_merge_rate'])}   gate failures: "
+              f"{r['gate_failures']}   merge conflicts: {r['conflicts']}   reverted: {r['reverted']}")
+    if r["why_escalated"]:
+        print("Why jobs went to a human: " + ", ".join(f"{n} {k}" for k, n in sorted(r["why_escalated"].items(), key=lambda kv: -kv[1])))
+    table("By risk", r["by_risk"])
+    table("By area", r["by_area"])
+    table("By surface", r["by_surface"])
+    rp = r["replay"]
+    if rp["runs"]:
+        print(f"\nReplays: {rp['runs']} run, " + ", ".join(f"{n} {k}" for k, n in sorted(rp["labels"].items()))
+              + f"; {pct(rp['equivalent_rate'])} equivalent, files recalled {pct(rp['avg_recall'])}, ${rp['cost']:.2f}")
+    print()
+    if r["earned_areas"]:
+        print(f"Earned (>= {minimum} decided jobs, >= {EARNED_RATE:.0%} auto-merged, no reverts): " + ", ".join(r["earned_areas"]))
+        print("To let only these merge without a human, set in factory/config.json:")
+        print('  "auto_merge": { "risks": ["low", "medium", "high"], "areas": ' + json.dumps(r["earned_areas"]) + " }")
+    else:
+        print(f"No area has earned auto-merge yet (needs {minimum} decided jobs, >= {EARNED_RATE:.0%} auto-merged, no reverts).")
+    print("These are counts from this machine's jobs. A small sample says little; read the PRs before you trust a number.")
+
+
+def main(argv):
+    minimum, as_json, github = 5, False, False
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--json":
+            as_json = True
+        elif a == "--github":
+            github = True
+        elif a == "--min" and args and args[0].isdigit():
+            minimum = int(args.pop(0))
+        else:
+            print(__doc__.strip(), file=sys.stderr)
+            sys.exit(2)
+    rows = [summarize(p.parent) for p in sorted(JOBS.glob("*/job.json"))] if JOBS.exists() else []
+    if github:
+        gone = reverted_prs(rows)
+        for r in rows:
+            r["reverted"] = r["id"] in gone
+    report = build(rows, minimum)
+    print(json.dumps(report, indent=2)) if as_json else show(report, minimum)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

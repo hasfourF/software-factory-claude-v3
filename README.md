@@ -67,6 +67,8 @@ One Claude Code session orchestrates every job, `concurrency` at a time
 /factory <feature>    create the issue (labeled), then run it
 /factory next         turn the first `- [ ]` line of factory/backlog.md into an issue, then run it
 /factory rework <n>   send an escalated job back to the builder with your PR comments
+/factory replay <pr>  rebuild a past merged PR offline and compare it with what shipped
+/factory metrics      how much to trust it, and where
 ```
 
 You approve by merging the PR on GitHub.
@@ -87,6 +89,46 @@ The spec lists numbered acceptance criteria (AC1, AC2, ...), the files it expect
 to change, and a separate **Recommendations** section for things worth doing that
 it did not put in scope. The code reviewer later maps each AC to a test, and the
 gate compares the real diff with the planned files.
+
+## Know how far to trust it
+
+Run it on your own history before you run it on new work, then let the numbers
+set how much it merges alone.
+
+**Calibrate with a replay.** `/factory replay list` shows merged PRs that closed an
+issue and are small. `/factory replay 41 44 52` rebuilds each from the issue as it
+was written, on a copy of the code *before* the PR, with no later history to peek
+at. Nothing is pushed, commented on or merged. Then the PR's own tests are run
+against what the factory built:
+
+| Result | Meaning |
+|---|---|
+| `equivalent` | passed the gate, and the shipped PR's tests pass on its code |
+| `plausible` | passed the gate and touched at least half the shipped files; no shipped tests to prove it |
+| `diverges` | passed the gate, but the shipped tests fail on its code, or it touched few of the same files |
+| `failed` | nothing built, or it never passed the gate |
+
+Each replay writes `replay.md` (what it changed that the PR did not, and the
+reverse). Choose PRs that touched tests; they are the only ones a rebuild can be
+proven against.
+
+**Measure real runs.** `factory/bin/metrics` reports auto-merge rate, cost and
+time per merged PR, rounds, gate failures, why jobs went to a human, and reverts
+(`--github`), by risk, by area (top-level directory) and by surface.
+
+**Turn that into autonomy.** An area is *earned* after five decided jobs, at least
+80% merged by the approver with no human rework, and no reverts. `metrics` prints
+the config to paste:
+
+```json
+"auto_merge": { "risks": ["low", "medium", "high"], "areas": ["docs", "src"] }
+```
+
+Then a change that touches any other directory, or a risk level you leave out of
+`risks`, always waits for you. It's enforced by the scripts, so the approver can't
+overrule it. Until you set it, the approver decides, as before.
+
+Small samples mislead. Treat the numbers as a prompt to read the PRs.
 
 ## Priorities and order
 
@@ -130,6 +172,7 @@ factory/
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's reviewers and models
   bin/doctor                  is this project ready to run the factory?
+  bin/metrics                 auto-merge rate, cost, reverts; which areas have earned trust
   setup.sh                    prepares a fresh worktree (the installer fills it in)
   lessons.md                  your rework feedback, read by builders and reviewers (created on first rework)
   backlog.md                  optional: lines `/factory next` turns into issues

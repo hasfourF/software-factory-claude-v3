@@ -81,6 +81,9 @@ and its result, or what the page showed.
   checks that the remote matches your last commit.
 - In round 1 only, open a draft PR with the issue number from `issue.md`:
   `gh pr create --draft --head <branch> --title "<spec title>" --body "Closes #<n>"`.
+- **Unless your prompt says `Replay`.** A replay is a rehearsal on a copy of old
+  code: commit, but never push, never run `gh`, never open a PR, and don't look
+  for the original change anywhere (not in git history, not on GitHub).
 
 ## Write build.md
 

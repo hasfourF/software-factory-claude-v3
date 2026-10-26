@@ -22,6 +22,10 @@ Usage:
   job stale                      jobs stuck in one stage for longer than the timeout
   job post-merge <job>           did CI on the base branch stay green after the merge?
   job backlog                    turn the first `- [ ]` line of factory/backlog.md into a labeled issue
+  job replay-list                merged PRs that make a fair test: they closed an issue and are small
+  job replay-create <pr>         rebuild a merged PR's issue from a snapshot of the code before it, offline
+  job replay-finish <job>        compare what the factory built with what shipped (replay.md)
+  job replay-clean <job>         delete a replay's snapshot and its answer key
 
 <job> is a job id (004-dark-mode) or an issue number (12).
 """
@@ -32,8 +36,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,7 +68,7 @@ TRANSITIONS = {
     "merging": {"merged", "build", "needs-human"},
     "needs-human": {"build", "merged"},
 }
-TERMINAL = {"merged", "rejected", "abandoned"}
+TERMINAL = {"merged", "rejected", "abandoned", "replayed"}
 WAITING = {"needs-info", "needs-human", "spec-review"}
 ACTIVE = set(TRANSITIONS) - WAITING
 LESSONS_KEPT = 30
@@ -81,14 +87,23 @@ def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run(cmd, cwd=REPO, check=True):
-    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def run(cmd, cwd=None, check=True):
+    res = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
     if check and res.returncode != 0:
         raise Refused(f"`{' '.join(cmd)}` failed: {(res.stderr or res.stdout).strip()}")
     return res
 
 
+_offline = False  # set while a replay job advances: nothing may reach GitHub
+
+
+def is_replay(job):
+    return bool(job.get("replay"))
+
+
 def gh(*args):
+    if _offline:
+        raise Refused("a replay job never talks to GitHub")
     return run(["gh", *args]).stdout
 
 
@@ -143,7 +158,7 @@ def all_jobs():
 
 def resolve(arg):
     if arg.isdigit():
-        matches = [j for j in all_jobs() if j["issue"] == int(arg)]
+        matches = [j for j in all_jobs() if j["issue"] == int(arg) and not is_replay(j)]
         if not matches:
             die(f"no job for issue #{arg}")
         return matches[0]
@@ -191,10 +206,8 @@ def fetch_issue(number):
                    "number,title,body,author,labels,state,url,comments")
 
 
-def write_issue_md(job):
-    issue = fetch_issue(job["issue"])
+def render_issue(issue, comments):
     author = issue["author"]["login"]
-    trusted = {author, operator()}
     lines = [
         f"# Issue #{issue['number']}: {issue['title']}",
         "",
@@ -208,14 +221,20 @@ def write_issue_md(job):
         "",
         quote(issue["body"] or ""),
     ]
-    comments = [c for c in issue["comments"] if c["author"]["login"] in trusted]
     if comments:
         lines += ["", "## Comments"]
         for c in comments:
             who = "factory" if c["body"].startswith(MARKER) else f"@{c['author']['login']}"
             body = c["body"].removeprefix(MARKER)
             lines += ["", f"### {who}, {c['createdAt']}", "", quote(body)]
-    (job_dir(job["id"]) / "issue.md").write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def write_issue_md(job):
+    issue = fetch_issue(job["issue"])
+    trusted = {issue["author"]["login"], operator()}
+    comments = [c for c in issue["comments"] if c["author"]["login"] in trusted]
+    (job_dir(job["id"]) / "issue.md").write_text(render_issue(issue, comments))
     return issue
 
 
@@ -232,10 +251,14 @@ def replied_since_question(issue):
 
 
 def comment(kind, number, body):
+    if _offline:
+        return
     gh(kind, "comment", str(number), "--body", f"{MARKER}\n{body}")
 
 
 def label(kind, number, add=None, remove=None):
+    if _offline:
+        return
     args = [kind, "edit", str(number)]
     if add:
         args += ["--add-label", add]
@@ -444,6 +467,8 @@ def planned_files(spec_path):
 
 def plan_wanted(job):
     """Should the spec wait for a human before the build? The label always asks; config.json plan_review sets the default."""
+    if is_replay(job):
+        return False
     if job.get("spec_revisions"):
         return True
     if LABELS["plan"] in {l["name"] for l in fetch_issue(job["issue"])["labels"]}:
@@ -476,6 +501,8 @@ def plan_state(job):
 
 def post_needs_human(job):
     """Tell GitHub and the operator that a job is waiting: the decision on the PR (or issue) and the label."""
+    if is_replay(job):
+        return
     d = job_dir(job["id"])
     body = f"### Factory: needs a human\n\n{(d / 'decision.md').read_text().split(chr(10), 1)[1].strip()}"
     if job["pr"]:
@@ -490,6 +517,9 @@ def post_needs_human(job):
 
 
 def remove_worktree(job, delete_branch):
+    if is_replay(job):
+        shutil.rmtree(job["worktree"], ignore_errors=True)  # a snapshot, not a git worktree
+        return
     if Path(job["worktree"]).exists():
         run(["git", "worktree", "remove", "--force", job["worktree"]])
     if delete_branch:
@@ -497,6 +527,15 @@ def remove_worktree(job, delete_branch):
 
 
 def advance(job, stage):
+    global _offline
+    _offline = is_replay(job)
+    try:
+        return _advance(job, stage)
+    finally:
+        _offline = False
+
+
+def _advance(job, stage):
     old = job["stage"]
     require(stage in TRANSITIONS.get(old, set()), f"{job['id']}: {old} → {stage} is not a legal transition")
     d = job_dir(job["id"])
@@ -512,9 +551,12 @@ def advance(job, stage):
             i = job["intake"]
             title += f" (risk {i['risk']}, surfaces: {', '.join(i['surfaces']) or 'none'})"
             # The worktree comes first: if setup fails, nothing has been posted and the job can retry.
-            run(["git", "fetch", "origin", BASE])
-            Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
-            run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], f"origin/{BASE}"])
+            if is_replay(job):
+                make_snapshot(job)
+            else:
+                run(["git", "fetch", "origin", BASE])
+                Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
+                run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], f"origin/{BASE}"])
             setup = FACTORY / "setup.sh"
             if setup.exists():
                 res = subprocess.run(["bash", str(setup)], cwd=job["worktree"], capture_output=True, text=True)
@@ -575,15 +617,16 @@ def advance(job, stage):
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
         require(int(git(job, "rev-list", "--count", f"origin/{BASE}..HEAD").stdout) > 0,
                 f"{job['branch']} has no commits on top of origin/{BASE}")
-        git(job, "fetch", "origin", job["branch"], check=False)
-        head = git(job, "rev-parse", "HEAD").stdout.strip()
-        res = git(job, "rev-parse", f"origin/{job['branch']}", check=False)
-        remote = res.stdout.strip() if res.returncode == 0 else ""
-        require(head == remote, f"{job['branch']} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
-        if not job["pr"]:
-            prs = gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number,url")
-            require(len(prs) == 1, f"expected one open PR from {job['branch']}, found {len(prs)}")
-            job["pr"], job["pr_url"] = prs[0]["number"], prs[0]["url"]
+        if not is_replay(job):  # a replay is never pushed and has no PR
+            git(job, "fetch", "origin", job["branch"], check=False)
+            head = git(job, "rev-parse", "HEAD").stdout.strip()
+            res = git(job, "rev-parse", f"origin/{job['branch']}", check=False)
+            remote = res.stdout.strip() if res.returncode == 0 else ""
+            require(head == remote, f"{job['branch']} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
+            if not job["pr"]:
+                prs = gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number,url")
+                require(len(prs) == 1, f"expected one open PR from {job['branch']}, found {len(prs)}")
+                job["pr"], job["pr_url"] = prs[0]["number"], prs[0]["url"]
 
     elif old == "build":  # → needs-human
         status = first_line(d / "build.md")
@@ -645,11 +688,17 @@ def advance(job, stage):
         want = "APPROVE" if stage == "merging" else "ESCALATE"
         line = first_line(d / "decision.md")
         require(line == want, f"decision.md starts with {line!r}, not {want}")
+        if stage == "merging":
+            require(not is_replay(job), "a replay never merges: finish it with `job replay-finish`")
         blocking = [f for f in gate_flags(job) if f in cfg("gate", "escalate_flags", default=[])]
+        risk, allowed = (job.get("intake") or {}).get("risk"), cfg("auto_merge", "risks")
+        if isinstance(allowed, list) and risk not in allowed:
+            blocking.append(f"risk-{risk}")
         if stage == "merging" and blocking:
-            escalate(job, f"The gate flagged this change: {', '.join(blocking)}. Those always go to a human, "
-                          f"whatever the approver decided. See round-{job['round']}/checks.md.")
-            raise Refused(f"the gate flagged {', '.join(blocking)}: that must be a human decision. "
+            escalate(job, f"This change is flagged: {', '.join(blocking)}. Those always go to a human, "
+                          f"whatever the approver decided (see auto_merge and gate.escalate_flags in "
+                          f"factory/config.json, and round-{job['round']}/checks.md).")
+            raise Refused(f"flagged {', '.join(blocking)}: that must be a human decision. "
                           f"decision.md now says ESCALATE; advance to needs-human")
 
     elif old == "merging" and stage == "build":
@@ -709,7 +758,7 @@ def claim_job_dir(slug):
 
 
 def cmd_create(number):
-    existing = [j for j in all_jobs() if j["issue"] == int(number)]
+    existing = [j for j in all_jobs() if j["issue"] == int(number) and not is_replay(j)]
     if existing:
         die(f"issue #{number} already has job {existing[0]['id']} ({existing[0]['stage']})")
     issue = fetch_issue(number)
@@ -751,7 +800,7 @@ def reconcile(job):
 
 
 def cmd_queue():
-    jobs = {j["issue"]: reconcile(j) for j in all_jobs()}
+    jobs = {j["issue"]: reconcile(j) for j in all_jobs() if not is_replay(j)}
     rows = []
     issues = gh_json("issue", "list", "--label", LABELS["queue"], "--state", "open",
                      "--limit", "200", "--json", "number,title,body,labels")
@@ -919,9 +968,11 @@ def cmd_plan(job):
 
 def cmd_overlap(job):
     """Active jobs whose planned files meet this job's. The orchestrator holds the build until they finish."""
+    if is_replay(job):
+        return
     mine = planned_files(job_dir(job["id"]) / "spec.md")
     for other in all_jobs():
-        if other["id"] == job["id"] or other["stage"] not in {"build", "gate", "review", "approve", "merging"}:
+        if other["id"] == job["id"] or is_replay(other) or other["stage"] not in {"build", "gate", "review", "approve", "merging"}:
             continue
         theirs = planned_files(job_dir(other["id"]) / "spec.md")
         shared = sorted({a for a in mine for b in theirs if fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a)})
@@ -1008,6 +1059,175 @@ def cmd_backlog():
     die("factory/backlog.md has no unchecked `- [ ]` items")
 
 
+def answer_key_dir(pr):
+    """Where a replay's answer key lives: inside .git, where agents don't look and the job folder doesn't reach."""
+    common = Path(run(["git", "rev-parse", "--git-common-dir"]).stdout.strip())
+    return (common if common.is_absolute() else REPO / common) / "factory-replay" / str(pr)
+
+
+def numstat_lines(text):
+    total = 0
+    for line in text.splitlines():
+        added, deleted, _ = line.split("\t", 2)
+        total += (int(added) if added.isdigit() else 0) + (int(deleted) if deleted.isdigit() else 0)
+    return total
+
+
+def test_globs():
+    return cfg("replay", "test_globs", default=["*test*", "*spec*", "tests/*", "__tests__/*"])
+
+
+def is_test(path):
+    return any(fnmatch.fnmatch(path, g) for g in test_globs())
+
+
+def make_snapshot(job):
+    """The code as it was before the PR, as a fresh one-commit repo: no later history for an agent to find."""
+    r, dest = job["replay"], Path(job["worktree"])
+    dest.mkdir(parents=True)
+    archive = subprocess.run(["git", "archive", r["base"]], cwd=REPO, capture_output=True)
+    if archive.returncode != 0:
+        raise Refused(f"`git archive {r['base'][:7]}` failed: {archive.stderr.decode().strip()}")
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    ident = ["-c", "user.name=factory", "-c", "user.email=factory@localhost"]
+    for cmd in (["init", "-q", "-b", BASE], ["add", "-A"], [*ident, "commit", "-q", "-m", f"Snapshot of {r['base'][:7]}"],
+                ["update-ref", f"refs/remotes/origin/{BASE}", "HEAD"], ["checkout", "-q", "-b", job["branch"]]):
+        run(["git", *cmd], cwd=dest)
+
+
+def cmd_replay_list():
+    limit = cfg("replay", "max_lines", default=300)
+    prs = gh_json("pr", "list", "--state", "merged", "--limit", "100", "--json",
+                  "number,title,additions,deletions,mergeCommit,closingIssuesReferences,headRefName,files")
+    rows = []
+    for pr in prs:
+        lines = pr["additions"] + pr["deletions"]
+        if (pr["headRefName"].startswith("factory/") or not pr["closingIssuesReferences"]
+                or not pr.get("mergeCommit") or not 0 < lines <= limit):
+            continue
+        rows.append((not any(is_test(f["path"]) for f in pr["files"]), -pr["number"], pr, lines))
+    print("PR\tissue\tlines\ttests\ttitle")
+    for no_tests, _, pr, lines in sorted(rows, key=lambda r: r[:2]):
+        print(f"#{pr['number']}\t#{pr['closingIssuesReferences'][0]['number']}\t{lines}\t"
+              f"{'no' if no_tests else 'yes'}\t{pr['title']}")
+    if not rows:
+        print(f"(no merged PR closes an issue in {limit} lines or fewer)", file=sys.stderr)
+
+
+def cmd_replay_create(number):
+    job_id = f"replay-{number}"
+    if job_dir(job_id).exists():
+        die(f"{job_id} already exists; `job replay-clean {job_id}` first")
+    pr = gh_json("pr", "view", number, "--json", "number,title,state,mergeCommit,closingIssuesReferences,additions,deletions")
+    require(pr["state"] == "MERGED", f"PR #{number} isn't merged")
+    merge = (pr.get("mergeCommit") or {}).get("oid")
+    require(merge, f"PR #{number} has no merge commit")
+    require(pr["closingIssuesReferences"], f"PR #{number} doesn't close an issue, so there is no request to replay")
+    run(["git", "fetch", "-q", "origin"], check=False)
+    parents = run(["git", "rev-list", "--parents", "-n", "1", merge]).stdout.split()[1:]
+    require(parents, f"{merge[:7]} has no parent commit")
+    base = parents[0]
+    changed = run(["git", "diff", "--numstat", base, merge]).stdout
+    require(numstat_lines(changed) == pr["additions"] + pr["deletions"],
+            f"{merge[:7]}'s change doesn't match the PR's size ({pr['additions']}+ {pr['deletions']}-): "
+            "a rebase merge can't be rebuilt, so choose a squash or merge-commit PR")
+    issue = gh_json("issue", "view", str(pr["closingIssuesReferences"][0]["number"]), "--json",
+                    "number,title,body,author,url")
+    key = answer_key_dir(number)
+    key.mkdir(parents=True, exist_ok=True)
+    (key / "shipped.diff").write_text(run(["git", "diff", base, merge]).stdout)
+    (key / "shipped-files.txt").write_text(run(["git", "diff", "--name-only", base, merge]).stdout)
+    (key / "meta.json").write_text(json.dumps({"merge": merge, "base": base, "lines": numstat_lines(changed)}))
+    d = job_dir(job_id)
+    d.mkdir(parents=True)
+    (d / "issue.md").write_text(render_issue(issue, []))  # the request as written, none of the discussion after it
+    save({
+        "id": job_id, "issue": issue["number"], "title": issue["title"], "issue_url": issue["url"],
+        "pr": None, "pr_url": None, "branch": f"factory/{job_id}",
+        "worktree": str(REPO.parent / f"{REPO.name}-factory" / job_id),
+        "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
+        "intake": None, "agents": None, "gate": None, "reviews": {},
+        "depends_on": [], "priority": 9, "spec_revisions": 0, "failures": [],
+        "replay": {"pr": int(number), "base": base, "merge": merge, "result": None},
+        "cost_usd": 0.0, "cost_by_role": {}, "started": now(), "stage_since": now(), "ended": None,
+    })
+    print(job_id)
+
+
+def run_shipped_tests(job, merge, tests):
+    """Put the shipped PR's tests on a copy of what the factory built and run the checks: does it behave the same?"""
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "tree"
+        shutil.copytree(job["worktree"], copy, symlinks=True)
+        for f in tests:
+            shown = subprocess.run(["git", "show", f"{merge}:{f}"], cwd=REPO, capture_output=True)
+            if shown.returncode == 0:  # a test the shipped PR deleted has nothing to copy
+                (copy / f).parent.mkdir(parents=True, exist_ok=True)
+                (copy / f).write_bytes(shown.stdout)
+        res = subprocess.run(["bash", str(FACTORY / "checks.sh")], cwd=copy, capture_output=True, text=True)
+    return res.returncode == 0, "\n".join((res.stdout + res.stderr).rstrip().splitlines()[-30:])
+
+
+def replay_label(built, gate, oracle, recall):
+    if not built or gate != "PASS":
+        return "failed"
+    if oracle == "pass":
+        return "equivalent"
+    if oracle == "fail":
+        return "diverges"
+    return "plausible" if recall >= 0.5 else "diverges"
+
+
+def cmd_replay_finish(job):
+    require(is_replay(job), f"{job['id']} is not a replay")
+    sync(job)
+    key = answer_key_dir(job["replay"]["pr"])
+    meta = json.loads((key / "meta.json").read_text())
+    shipped = (key / "shipped-files.txt").read_text().split()
+    span = f"origin/{BASE}...HEAD"
+    wt = Path(job["worktree"])
+    built = wt.exists() and int(git(job, "rev-list", "--count", f"origin/{BASE}..HEAD").stdout) > 0
+    mine = git(job, "diff", "--name-only", span).stdout.split() if built else []
+    lines = numstat_lines(git(job, "diff", "--numstat", span).stdout) if built else 0
+    hit = set(mine) & set(shipped)
+    recall = len(hit) / len(shipped) if shipped else 0.0
+    precision = len(hit) / len(mine) if mine else 0.0
+    tests = [f for f in shipped if is_test(f)]
+    oracle, output = (None, "")
+    if built and tests:
+        ok, output = run_shipped_tests(job, meta["merge"], tests)
+        oracle = "pass" if ok else "fail"
+    decision = first_line(job_dir(job["id"]) / "decision.md")
+    label_ = replay_label(built, job["gate"], oracle, recall)
+    result = {"label": label_, "gate": job["gate"], "decision": decision, "oracle": oracle, "recall": round(recall, 2),
+              "precision": round(precision, 2), "lines": lines, "shipped_lines": meta["lines"],
+              "files": len(mine), "shipped_files": len(shipped), "cost_usd": job["cost_usd"]}
+    job["replay"]["result"] = result
+    job["stage"], job["ended"], job["stage_since"] = "replayed", now(), now()
+    (job_dir(job["id"]) / "replay.md").write_text(
+        f"RESULT: {label_}\n\n## Compared with PR #{job['replay']['pr']}\n"
+        f"- Gate: {job['gate'] or 'not reached'}. Approver: {decision or 'not reached'}.\n"
+        f"- Size: {lines} lines in {len(mine)} files; shipped {meta['lines']} lines in {len(shipped)} files.\n"
+        f"- Files: recall {recall:.0%} (of the shipped files, how many it touched), precision {precision:.0%}.\n"
+        f"- Shipped tests on the factory's code: {oracle or 'none to run' if built else 'nothing was built'}.\n\n"
+        f"## Files only the factory changed\n" + ("\n".join(f"- {f}" for f in sorted(set(mine) - set(shipped))) or "None.")
+        + "\n\n## Files only the shipped PR changed\n" + ("\n".join(f"- {f}" for f in sorted(set(shipped) - set(mine))) or "None.")
+        + (f"\n\n## Shipped tests: last lines of the output\n\n```\n{output}\n```\n" if output else "\n")
+        + "\n`equivalent` means the gate passed and the shipped PR's own tests pass on this code. `plausible` means it "
+          "passed the gate and touched at least half the shipped files, but there were no shipped tests to prove it. "
+          "`diverges` and `failed` need a look: read the shipped diff in .git/factory-replay/.\n")
+    save(job)
+    print(f"{job['id']}: {label_} (gate {job['gate'] or '-'}, shipped tests {oracle or '-'}, "
+          f"recall {recall:.0%}, ${job['cost_usd']:.2f})")
+
+
+def cmd_replay_clean(job):
+    require(is_replay(job), f"{job['id']} is not a replay")
+    shutil.rmtree(job["worktree"], ignore_errors=True)
+    shutil.rmtree(answer_key_dir(job["replay"]["pr"]), ignore_errors=True)
+    print(f"{job['id']}: snapshot and answer key deleted")
+
+
 def elapsed(job):
     start = parse_time(job["started"])
     end = parse_time(job["ended"]) if job["ended"] else datetime.now(timezone.utc)
@@ -1069,6 +1289,14 @@ def main(argv):
             cmd_post_merge(resolve(args[0]))
         elif cmd == "backlog" and not args:
             cmd_backlog()
+        elif cmd == "replay-list" and not args:
+            cmd_replay_list()
+        elif cmd == "replay-create" and len(args) == 1 and args[0].isdigit():
+            cmd_replay_create(args[0])
+        elif cmd == "replay-finish" and len(args) == 1:
+            cmd_replay_finish(load(args[0]))
+        elif cmd == "replay-clean" and len(args) == 1:
+            cmd_replay_clean(load(args[0]))
         else:
             die(f"bad arguments: {' '.join(argv)}\n\n{__doc__.strip()}")
     except Refused as e:

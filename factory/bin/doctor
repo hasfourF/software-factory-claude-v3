@@ -81,6 +81,11 @@ def check_config():
         for role, model in route.items():
             if model not in {"haiku", "sonnet", "opus", "fable"}:
                 report("warn", "routing", f"{risk}.{role} is {model!r}, not haiku, sonnet, opus or fable")
+    auto = config.get("auto_merge") or {}
+    if not set(auto.get("risks") or ["low", "medium", "high"]) <= {"low", "medium", "high"}:
+        report("FAIL", "auto_merge.risks", "must be a list of low, medium and high")
+    if auto.get("areas") is not None and not isinstance(auto["areas"], list):
+        report("FAIL", "auto_merge.areas", "must be null (every area) or a list of top-level directories")
     plan = config.get("plan_review", "never")
     if plan not in {"never", "high", "medium", "always"}:
         report("FAIL", "plan_review", f"{plan!r} isn't never, high, medium or always")

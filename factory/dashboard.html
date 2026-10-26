@@ -291,7 +291,7 @@ const COLUMNS = [
   { label: 'Review', who: 'routed reviewers', stages: ['review'] },
   { label: 'Approve', who: 'approver · merge', stages: ['approve', 'merging'] },
   { label: 'Needs human', who: 'you', stages: ['needs-human'], cls: 'human' },
-  { label: 'Done', who: 'merged · rejected · closed', stages: ['merged', 'rejected', 'abandoned'], cls: 'merged-col' },
+  { label: 'Done', who: 'merged · rejected · replayed', stages: ['merged', 'rejected', 'abandoned', 'replayed'], cls: 'merged-col' },
 ]
 const STAGES = new Set(COLUMNS.flatMap((c) => c.stages))
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
@@ -376,10 +376,11 @@ function links(job) {
 function card(job, rounds) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
-  const done = ['merged', 'rejected', 'abandoned'].includes(job.stage)
+  const done = ['merged', 'rejected', 'abandoned', 'replayed'].includes(job.stage)
   const planning = job.stage === 'spec-review'
   const [num, ...slug] = job.id.split('-')
-  const flag = human ? '<span class="flag">your call</span>'
+  const flag = job.replay ? `<span class="flag wait">replay${job.replay.result ? ' · ' + esc(job.replay.result.label) : ''}</span>`
+    : human ? '<span class="flag">your call</span>'
     : planning ? '<span class="flag">review the plan</span>'
     : job.stage === 'needs-info' ? '<span class="flag wait">asked author</span>'
     : job.stage === 'abandoned' ? '<span class="flag wait">PR closed</span>'

@@ -58,6 +58,7 @@ factory/bin/job
 factory/bin/gate
 factory/bin/route
 factory/bin/doctor
+factory/bin/metrics
 factory/dashboard.html
 ```
 
@@ -66,7 +67,7 @@ SRC=repos/hasfourF/software-factory-claude-v3/contents
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && gh api -H "Accept: application/vnd.github.raw" "$SRC/$f" > "$f"
 done
-chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor
+chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor factory/bin/metrics
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `CHANGELOG.md`, `LICENSE`,
@@ -107,6 +108,13 @@ fails. If the project needs nothing, delete the file. Keep it non-interactive.
   they want; `high` is the default.
 - `limits`: the per-job and per-run cost caps (API-equivalent USD) and the stage
   timeout. Ask the user for caps they are comfortable with.
+- `auto_merge`: leave `risks` as all three and `areas` as `null` for now. They are
+  the autonomy dial: `risks` limits which risk levels the factory may merge itself,
+  and a list in `areas` (top-level directories) means a change touching any other
+  directory always waits for the user. `factory/bin/metrics` says when an area has
+  earned it; don't set it from a guess.
+- `replay.test_globs`: which files count as tests when a replay checks a rebuild
+  against the shipped PR's tests. Add this project's naming if it differs.
 - `notify.command`: optional, e.g. `notify-send "factory" "$FACTORY_MESSAGE"`.
 - `ports`: move `base` if the project already uses ports 5100–5199.
 - Leave `concurrency`, `max_rounds`, `routing`, `surface_reviewers`, `gate.retries`
@@ -235,6 +243,11 @@ Then tell the user, in a few lines:
   builds. It posts the spec on the issue; they comment to revise it, then add
   `factory:plan-approved` (or comment `/approve`) to build.
 - `factory/bin/doctor` is the first thing to run when something looks wrong.
+- Before trusting it with real issues, calibrate: `/factory replay list` shows
+  past merged PRs it can rebuild offline, and `/factory replay <pr> ...` rebuilds
+  three to five of them from the code as it was and compares each with what shipped.
+  Nothing is pushed or merged. Then `/factory metrics` shows how much to trust it,
+  and where.
 
 ## Moving from v1
 

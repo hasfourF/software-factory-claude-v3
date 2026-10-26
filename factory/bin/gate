@@ -16,9 +16,15 @@ so a branch can't change the checks it is judged by. It fails when:
   - the branch adds a line that looks like a secret (`gate.scan_secrets`).
 
 It also raises FLAGS in checks.md, which never fail the gate but change what
-happens next: `large-diff`, `new-dependency` and `escalate-path` (in
-`gate.escalate_flags`) always go to a human; `security-path` adds the security
-review; `off-plan` tells reviewers the branch touched files the spec didn't list.
+happens next: `large-diff`, `new-dependency`, `escalate-path` and
+`unearned-area` (in `gate.escalate_flags`) always go to a human; `security-path`
+adds the security review; `off-plan` tells reviewers the branch touched files the
+spec didn't list.
+
+`unearned-area` is the autonomy dial: when config.json `auto_merge.areas` is a
+list, a change that touches a top-level directory outside it is never merged
+without a human. `factory/bin/metrics` suggests which areas have earned it. The
+changed paths are written to round-N/changed-files.txt for the metrics.
 """
 
 import fnmatch
@@ -56,6 +62,11 @@ def git(worktree, *args):
     if res.returncode != 0:
         die(f"`git {' '.join(args)}` failed: {res.stderr.strip()}")
     return res.stdout
+
+
+def area(path):
+    """The part of the repo a path belongs to: its top-level directory, or `.` for a root file."""
+    return path.split("/", 1)[0] if "/" in path else "."
 
 
 def matches(path, patterns):
@@ -155,6 +166,10 @@ def gate(job_id, merge):
         flags.append("escalate-path")
     if any(matches(p, CONFIG.get("force_security_paths", [])) for p in paths):
         flags.append("security-path")
+    earned = (CONFIG.get("auto_merge") or {}).get("areas")
+    unearned = sorted({area(p) for p in paths if isinstance(earned, list) and area(p) not in earned})
+    if unearned:
+        flags.append("unearned-area")
     plan = planned(job_dir)
     unplanned = [p for p in paths if plan and not matches(p, plan)]
     if len(unplanned) > OFF_PLAN_FILES:
@@ -162,6 +177,7 @@ def gate(job_id, merge):
 
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
+    (round_dir / "changed-files.txt").write_text("".join(f"{p}\n" for p in paths))
     tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
     (round_dir / f"{name}.md").write_text(
         f"GATE: {verdict}\nCOMMIT: {commit}\nFLAGS: {', '.join(flags) or 'none'}\n\n"
@@ -171,6 +187,7 @@ def gate(job_id, merge):
         + ("\n".join(f"- {s}" for s in secrets) if secrets else "None found in added lines.")
         + f"\n\n## Size\n{size} lines changed in {len(paths)} files"
         + (f" (limit {settings['max_diff_lines']})" if "large-diff" in flags else "") + "."
+        + ("\n\n## Areas\nOutside auto_merge.areas, so a human merges this: " + ", ".join(unearned) if unearned else "")
         + "\n\n## Plan vs diff\n"
         + ("The spec lists no files to touch." if plan is None else
            "\n".join(f"- not in the spec: {p}" for p in unplanned) if unplanned else "Every changed file is in the spec.")

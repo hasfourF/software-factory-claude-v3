@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory issue <n>, /factory next, /factory <feature>, or /factory rework <n>. The session that runs it becomes the orchestrator of the intake → spec → build → gate → review → approve pipeline for every open `factory` issue.
+description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory issue <n>, /factory next, /factory <feature>, /factory rework <n>, /factory replay <pr>, or /factory metrics. The session that runs it becomes the orchestrator of the intake → spec → build → gate → review → approve pipeline for every open `factory` issue.
 ---
 
 # Factory
@@ -98,6 +98,32 @@ run `/factory issue <n>` with the number it prints.
 
 `factory/bin/job backlog` turns the first unchecked line of `factory/backlog.md`
 into a labeled issue and prints its number. Run `/factory issue <n>`.
+
+### /factory metrics
+
+`factory/bin/metrics` (add `--github` to count reverted PRs, `--min N` to change how
+many jobs an area needs). Show its output as it is, then say in two or three lines
+what it suggests: which areas have earned auto-merge, which need a human, and
+whether the sample is big enough to mean anything. Don't edit `auto_merge`
+yourself; the user decides.
+
+### /factory replay
+
+Calibration: rebuild the user's own past, merged work and compare it with what
+shipped. Nothing is pushed, commented on or merged.
+
+- `/factory replay list`: `factory/bin/job replay-list` shows merged PRs that closed an
+  issue and are small, those with tests first (a test is what proves a rebuild right).
+- `/factory replay <pr> [<pr>...]`: run each through **One job** in replay mode, up to
+  `concurrency` at a time. Suggest three to five to start. Say what it will cost
+  (`limits.max_cost_usd_per_run` applies) before spawning anything.
+- `/factory replay` with no number resumes replays that did not finish
+  (`factory/bin/job summary`, ids `replay-<pr>`).
+- `/factory replay clean <pr>` runs `factory/bin/job replay-clean replay-<pr>`.
+
+When they finish, run `factory/bin/metrics` and report each replay's `RESULT` line
+from `factory/jobs/replay-<pr>/replay.md` (equivalent, plausible, diverges,
+failed), and what that says about trusting the factory on this project.
 
 ### /factory rework <n>
 
@@ -206,16 +232,17 @@ user. Then:
 
 Spawn `approver` (`<paths> Final round: <N>.`) and read the first line of `decision.md`.
 
-- `APPROVE`: `factory/bin/job merge <id>`. It syncs with main, gates again and runs
+- `APPROVE`: `factory/bin/job merge <id>` (a replay runs `replay-finish` instead). It syncs with main, gates again and runs
   `gh pr merge`. Its one line says what happened:
   - `merged`: done.
   - `needs-human: …`: stop the job.
   - `build (round N): conflicts with main`: another job merged first. Go to **Build**
     with the conflict note; the builder resolves it and the job runs the gate and
     reviews again.
-  - A refusal that says the gate flagged `large-diff`, `new-dependency` or
-    `escalate-path`: those always go to a human. It has rewritten `decision.md` to
-    `ESCALATE`; run `job advance <id> needs-human`.
+  - A refusal that says the change is flagged (`large-diff`, `new-dependency`,
+    `escalate-path`, `unearned-area`, or `risk-<level>` when the risk isn't in
+    `auto_merge.risks`): those always go to a human. It has rewritten `decision.md`
+    to `ESCALATE`; run `job advance <id> needs-human`.
 - `ESCALATE`: `job advance <id> needs-human`. It marks the PR ready, posts the decision
   and labels the issue. Stop the job. The user merges the PR to approve, or
   comments and runs `/factory rework <n>`.
@@ -225,6 +252,25 @@ Spawn `approver` (`<paths> Final round: <N>.`) and read the first line of `decis
 Print one line with the job id, its final stage, the PR, cost and elapsed time
 (`factory/bin/job summary <id>`). For a merged job, run `factory/bin/job post-merge <id>`
 and print what it says: a red CI on main is the user's to know about now.
+
+## Replay jobs
+
+`factory/bin/job replay-create <pr>` prints the id (`replay-<pr>`). A replay is **One job**
+with these differences, and they are not optional:
+
+- It builds from a snapshot of the code *before* the PR, in a repo with no later
+  history. The shipped solution is kept in `.git/factory-replay/`; never read it,
+  never point an agent at it, and never `git log` the main checkout to look.
+- Every agent prompt after the identity sentence adds ` Replay: commit only. Never
+  push, never run gh, never open a PR.` The port is `base + step*n` with `n` the PR
+  number modulo 50.
+- No plan review, no overlap check, no comments or labels on GitHub: `job advance`
+  skips them. If a `gh` call is ever refused with "a replay job never talks to
+  GitHub", something is wrong; stop and tell the user.
+- Skip **Approve and merge**. When the approver has written `decision.md`, or the
+  job ends any other way (intake not ACCEPT, `needs-human`, a cost cap), run
+  `factory/bin/job replay-finish replay-<pr>`. It compares the result with the
+  shipped PR and writes `replay.md`. Print its one line.
 
 ## Report
 

@@ -206,12 +206,35 @@ class Refusals(Quiet, unittest.TestCase):
         self.assertEqual("needs-human", job.advance(j, "needs-human")["stage"])
 
     def test_unflagged_approval_goes_through(self):
-        j = self.make(stage="approve", round=1)
+        j = self.make(stage="approve", round=1, intake={"risk": "low"})
         rd = self.dir(j) / "round-1"
         rd.mkdir()
         (rd / "checks.md").write_text("GATE: PASS\nCOMMIT: abc\nFLAGS: security-path, off-plan\n\n")
         (self.dir(j) / "decision.md").write_text("APPROVE\n\n## Why\nfine\n")
         self.assertEqual("merging", job.advance(j, "merging")["stage"])
+
+    def approved(self, risk, flags="none"):
+        j = self.make(stage="approve", round=1, intake={"risk": risk})
+        rd = self.dir(j) / "round-1"
+        rd.mkdir(exist_ok=True)
+        (rd / "checks.md").write_text(f"GATE: PASS\nCOMMIT: abc\nFLAGS: {flags}\n\n")
+        (self.dir(j) / "decision.md").write_text("APPROVE\n\n## Why\nfine\n")
+        return j
+
+    def with_auto_merge(self, **value):
+        saved = job.CONFIG.get("auto_merge")
+        job.CONFIG["auto_merge"] = value
+        self.addCleanup(lambda: job.CONFIG.__setitem__("auto_merge", saved))
+
+    def test_a_risk_outside_auto_merge_goes_to_a_human(self):
+        self.with_auto_merge(risks=["low"], areas=None)
+        with self.assertRaisesRegex(job.Refused, "risk-high"):
+            job.advance(self.approved("high"), "merging")
+        self.assertEqual("merging", job.advance(self.approved("low"), "merging")["stage"])
+
+    def test_an_unearned_area_cannot_be_auto_merged(self):
+        with self.assertRaisesRegex(job.Refused, "unearned-area"):
+            job.advance(self.approved("low", "unearned-area"), "merging")
 
     def test_conflict_needs_a_conflict_note(self):
         j = self.make(stage="merging", round=1)

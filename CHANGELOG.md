@@ -54,10 +54,24 @@ Changes since ZazenCodes' v2, the version in their video.
   share one.
 - Unit tests for `job` and `gate` (`factory/tests/`).
 
+- **Metrics.** `factory/bin/metrics`: auto-merge rate, cost and time per merged
+  PR, rounds, gate failures, why jobs escalated and reverts, by risk, area and
+  surface; it names the areas that have earned auto-merge and prints the config.
+- **Earned autonomy.** `auto_merge.risks` and `auto_merge.areas` in config.json.
+  A change outside them is never merged without a human, enforced in `job` and
+  `gate` (new `unearned-area` flag), not left to the approver.
+- **Replay.** `/factory replay <pr>` rebuilds a merged PR's issue offline from a
+  one-commit snapshot of the code before it (no later history), then runs the
+  shipped PR's own tests against the result. Nothing is pushed, commented on or
+  merged, and `job` refuses any GitHub call from a replay. `replay-list`,
+  `replay-create`, `replay-finish`, `replay-clean`. New stage `replayed`.
+- The gate writes `round-N/changed-files.txt`.
+
 ### Changed
 
 - `protected_paths` also covers `factory/bin/*`, `factory/setup.sh` and
   `.github/workflows/*`.
+- `job` resolves its working directory when it runs, not when it loads.
 - Agent prompts begin `Job: <id>. Job folder: ... Role: <agent>.` so the cost
   can be split by role.
 

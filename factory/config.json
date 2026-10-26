@@ -64,7 +64,15 @@
       "Gemfile",
       "composer.json"
     ],
-    "escalate_flags": ["large-diff", "new-dependency", "escalate-path"]
+    "escalate_flags": ["large-diff", "new-dependency", "escalate-path", "unearned-area"]
+  },
+  "auto_merge": {
+    "risks": ["low", "medium", "high"],
+    "areas": null
+  },
+  "replay": {
+    "max_lines": 300,
+    "test_globs": ["*test*", "*spec*", "tests/*", "__tests__/*"]
   },
   "limits": {
     "max_cost_usd_per_job": 5.0,
