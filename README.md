@@ -34,12 +34,12 @@ the install finishes, `factory/bin/doctor` tells you whether it's ready.
 ## The loop
 
 ```
-issues labeled `factory`
+issues labeled `factory`  (yours, or proposed by a feeder and promoted by you)
         │
         ▼
 intake (fable) ── NEEDS-INFO → asks the author on the issue, waits for a reply
         │         REJECT     → says why on the issue, removes the label
-        ▼ ACCEPT, maybe rescoped; rates risk + surfaces
+        ▼ ACCEPT, maybe rescoped; rates risk + surfaces; picks a recipe if one fits
 route (script)    picks reviewers and models from config.json
         ▼
 spec-writer (opus) → spec.md ──► plan review (optional): the spec is posted on
@@ -47,13 +47,16 @@ spec-writer (opus) → spec.md ──► plan review (optional): the spec is pos
         ▼
 builder (sonnet, opus when risky) → commits, pushes, opens a draft PR "Closes #n"
         ▼            ▲
-gate (script) ─FAIL──┤  checks.sh, protected paths, secret scan; no reviewer runs on a failing build
-        ▼ PASS       │
+gate (script) ─FAIL──┤  checks.sh, acceptance commands, verify.sh, protected paths,
+        ▼ PASS       │  secret scan; no reviewer runs on a failing build
 reviewers ─CHANGES───┘  code (haiku | sonnet), + ux & ui on UI changes, + security
         ▼ all PASS
 approver (opus) ── APPROVE  → sync with main, gate again, gh pr merge
                 └─ ESCALATE → PR ready for you, issue labeled factory:needs-human
 ```
+
+Around the loop: feeders fill the queue, recipes and lessons steer the agents, and
+`metrics` and `replay` tell you how far to trust the result.
 
 One Claude Code session orchestrates every job, `concurrency` at a time
 (default 3). Each job gets its own git worktree and branch. All state lives in
@@ -61,21 +64,90 @@ One Claude Code session orchestrates every job, `concurrency` at a time
 
 ## Commands
 
-```
-/factory run          drain the queue: every open `factory` issue, `concurrency` at a time; also resumes
-/factory issue <n>    one issue now
-/factory <feature>    create the issue (labeled), then run it
-/factory next         turn the first `- [ ]` line of factory/backlog.md into an issue, then run it
-/factory rework <n>   send an escalated job back to the builder with your PR comments
-/factory replay <pr>  rebuild a past merged PR offline and compare it with what shipped
-/factory metrics      how much to trust it, and where
-/factory feed         find work (failing CI, advisories, TODOs) and propose it as issues
-/factory recipe <pr>  draft a recipe from merged PRs that did the same kind of change
-/factory learn        add review comments and reverts on merged PRs to lessons.md
-/factory lessons      propose a tidied lessons.md
-```
+In Claude Code, from the project root:
 
-You approve by merging the PR on GitHub.
+| Command | What it does |
+|---|---|
+| `/factory run` | Drain the queue: every open `factory` issue, `concurrency` at a time. Also resumes jobs after a crash, then learns from PRs that merged since last time and lists what is waiting on you. With `feeders.auto_create` on, it files feeder issues first. |
+| `/factory issue <n>` | Run one issue now. |
+| `/factory <feature>` | File the issue (labeled `factory`) from a sentence, then run it. |
+| `/factory next` | Turn the first `- [ ]` line of `factory/backlog.md` into an issue, then run it. |
+| `/factory rework <n>` | Send an escalated job back to the builder with your comments on its PR. They also go into `lessons.md`. |
+| `/factory feed [--create] [--source <name>]` | Show work the project already knows about (failing CI, advisories, `TODO(factory)` comments, custom sources) and what would be filed. Files nothing without `--create`. `<name>` is `ci`, `deps`, `todo` or `custom:<name>`. See [Fill the queue](#fill-the-queue). |
+| `/factory replay list` | Merged PRs that make a fair test: they closed an issue and are small. Those with tests come first. |
+| `/factory replay <pr> [<pr>...]` | Rebuild each PR's issue offline from the code before it and compare with what shipped. Nothing is pushed or merged. It tells you the cost first. |
+| `/factory replay` | Resume replays that didn't finish. |
+| `/factory replay clean <pr>` | Delete a replay's snapshot and answer key. |
+| `/factory metrics [--github] [--min N] [--json]` | Auto-merge rate, cost, reverts, by risk, area, surface, recipe and origin; which areas have earned auto-merge. `--github` counts reverted PRs; `--min N` sets how many jobs an area needs (default 5). |
+| `/factory recipe <pr> [<pr>...]` | Draft a recipe from merged PRs that did the same kind of change, into `factory/recipes/drafts/`. |
+| `/factory learn [<job>]` | Add what trusted people said on merged factory PRs, and any reverts, to `lessons.md`. Runs by itself after each `/factory run`. |
+| `/factory lessons` | Propose a tidied, grouped `lessons.md` in `lessons.proposed.md`. You replace the file yourself. |
+
+You approve a PR by merging it on GitHub. You approve a plan with the
+`factory:plan-approved` label or a `/approve` comment on the issue.
+
+### From the terminal
+
+These are plain scripts; run them from the project root. `python3` 3.10+ and `gh` only.
+
+| Command | What it does |
+|---|---|
+| `factory/bin/doctor [--skip-checks]` | Is the project ready? Checks tools, config, labels, agents, name clashes, permissions, and that `checks.sh` passes on the base branch (`--skip-checks` skips that slow part). Run it first when something looks wrong. |
+| `factory/bin/metrics [--json] [--github] [--min N]` | The same report as `/factory metrics`. |
+| `factory/bin/feed [--create] [--source <name>]` | The same as `/factory feed`. |
+| `factory/bin/job summary [<job>...]` | Every job: stage, round, PR, cost, time. |
+| `factory/bin/job queue` | What `/factory run` would do with each labeled and proposed issue. |
+| `factory/bin/job stale` | Jobs stuck in one stage longer than `limits.stage_timeout_minutes`. |
+| `factory/bin/job post-merge <job>` | Did CI on the base branch stay green after this job merged? |
+| `factory/bin/job recipes` | The recipes in `factory/recipes/` and when each applies. |
+| `factory/bin/job learn [<job>]` | The same as `/factory learn`. |
+| `factory/bin/job backlog` | Turn the first unchecked `factory/backlog.md` line into a labeled issue. |
+| `factory/bin/job replay-list`, `replay-clean <job>` | The same as `/factory replay list` and `replay clean`. |
+| `python3 -m unittest discover -s factory/tests` | The test suite. |
+
+`job` is the only writer of job state, and it refuses moves the job's files don't
+justify, so don't run its other subcommands (`create`, `advance`, `merge`, `rework`,
+`agents`, `sync`, `plan`, `plan-needed`, `overlap`, `guard`, `replay-create`,
+`replay-finish`) or `gate` and `route` by hand. The skill calls them.
+
+### Labels
+
+| Label | Meaning |
+|---|---|
+| `factory` | Build this issue. Only people with triage or write access can add it. |
+| `factory:needs-info` | The factory asked the author a question and is waiting. |
+| `factory:needs-human` | The PR is ready for you: merge it, or comment and `/factory rework`. |
+| `factory:plan` | Show me the plan before you build. |
+| `factory:plan-review` | The plan is posted and waiting for you. |
+| `factory:plan-approved` | Build the plan as written. |
+| `factory:feed` | A feeder filed this issue. |
+| `factory:proposed` | A feeder filed this and it waits until you add `factory`. |
+| `factory:p0`, `p1`, `p2` | Priority, p0 first. |
+
+### Settings
+
+Everything is in `factory/config.json`. The ones you'll touch:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `concurrency` | `3` | Jobs at once. Start with `1`. |
+| `max_rounds` | `3` | Build rounds per job before a human is asked. |
+| `base_branch`, `merge_method` | `main`, `merge` | Where PRs go and how they merge (`merge`, `squash`, `rebase`). |
+| `plan_review` | `high` | Post the spec and wait for you: `never`, `high`, `medium` or `always`. The `factory:plan` label asks for it on one issue. |
+| `routing`, `surface_reviewers` | see file | Builder and reviewer models by risk, and the extra reviewers for `ui` and `security`. |
+| `auto_merge.risks`, `auto_merge.areas` | all risks, `null` | The autonomy dial. A change outside them always waits for you. `metrics` suggests `areas`. |
+| `gate.retries` | `1` | Re-runs of a failing `checks.sh`; a pass on a retry is reported as flaky. |
+| `gate.verify_allow` | `[]` | Command prefixes the gate may run from a spec's `## Verification`. Empty means none run. |
+| `gate.max_diff_lines` | `800` | A bigger diff always goes to a human. |
+| `gate.respect_codeowners` | `true` | A path with a `CODEOWNERS` owner always goes to a human. |
+| `protected_paths` | the factory and `.github/workflows/*` | Existing files a branch must not modify. Add your tests. |
+| `force_security_paths`, `always_escalate_paths` | see file | A diff touching the first gets the security review; one touching the second always goes to a human. |
+| `limits` | `$5` a job, `$25` a run, `90` min | Cost caps (API-equivalent) and the stage timeout. |
+| `feeders` | `ci` on, `deps` and `todo` off | Sources, caps (`max_open` 5, `max_per_run` 3, `cooldown_days` 30), and `auto_create` (off). |
+| `replay` | `300` lines | The size limit for `replay list`, and which files count as tests. |
+| `lessons.curate_after` | `20` | Entries before `learn` suggests `/factory lessons`. |
+| `post_merge` | `report` | After a merge, check CI on the base branch: `off`, `report` or `issue`. |
+| `notify.command` | `null` | A shell command run with `$FACTORY_MESSAGE` when a job needs you or merges. |
 
 ## Review the plan first
 
@@ -211,7 +283,9 @@ whose specs plan to touch the same files don't build at the same time.
 - **Cost caps**: `limits.max_cost_usd_per_job` and `max_cost_usd_per_run`. A job
   over its cap is escalated; a run over its cap starts nothing new.
 - **Always a human**: a diff over `gate.max_diff_lines`, a changed dependency
-  manifest, or a touched path in `always_escalate_paths` can't be auto-merged.
+  manifest, a touched path in `always_escalate_paths`, a path with a `CODEOWNERS`
+  owner, a directory outside `auto_merge.areas`, or a risk outside `auto_merge.risks`
+  can't be auto-merged, whatever the approver says.
 - **Security backstop**: a diff that touches `force_security_paths` gets the
   security review even if intake didn't ask for it.
 - **Flaky checks** are retried (`gate.retries`) and reported as flaky.
@@ -229,13 +303,16 @@ whose specs plan to touch the same files don't build at the same time.
     spec-writer.md            opus     spec.md
     builder.md                routed   code, commits, the PR, build.md
     reviewer-code.md          routed   correctness, simplicity, tests
-    reviewer-security.md      opus     only when intake flags `security`
+    reviewer-security.md      opus     when intake flags `security`, or the diff touches security paths
     reviewer-ux.md            sonnet   only when intake flags `ui`
     reviewer-ui.md            haiku    only when intake flags `ui`
     approver.md               opus     APPROVE or ESCALATE
+    recipe-writer.md          opus     drafts a recipe from merged PRs (/factory recipe)
+    lessons-curator.md        sonnet   proposes a tidied lessons.md (/factory lessons)
 factory/
-  config.json                 concurrency, rounds, labels, routing, protected paths, prices
+  config.json                 every setting (see Settings above)
   checks.sh                   your repo's checks (the installer fills it in)
+  verify.sh                   optional: slower verification, run after checks.sh passes
   bin/job                     the only writer of job.json; refuses illegal moves; merges
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's reviewers and models
@@ -244,10 +321,11 @@ factory/
   bin/feed                    files issues for failing CI, advisories, TODO(factory) comments, custom sources
   setup.sh                    prepares a fresh worktree (the installer fills it in)
   lessons.md                  feedback from your reworks, reviews and reverts, read by builders and reviewers
+  lessons.proposed.md         the curator's tidy version, until you adopt it
   recipes/                    your playbooks for common kinds of change (drafts/ is never used)
   backlog.md                  optional: lines `/factory next` turns into issues
   dashboard.html              the board
-  tests/                      unit tests for job and gate (not copied by the installer)
+  tests/                      unit tests for every script (not copied by the installer)
 examples/jobs/                finished jobs from a real run
 INSTALL.md                    instructions for the installing agent
 BUILD_PROMPT.md               the prompt that builds v2 on top of v1
@@ -265,9 +343,9 @@ The tests need only the standard library: `python3 -m unittest discover -s facto
 The prompt from ZazenCodes' video that builds v2 on top of
 [v1](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code). It's self-contained: paste it into
 Claude Code in a GitHub repo and it builds the factory from v1's code. It
-produces the factory as it was in the video, without this version's changes; plan review, the safety limits and
-the other changes in [`CHANGELOG.md`](CHANGELOG.md) come with the install prompt
-above.
+produces the factory as it was in the video, without this version's changes. Plan
+review, the safety limits and everything else in [`CHANGELOG.md`](CHANGELOG.md) come
+with the install prompt above.
 
 ## Dashboard
 
@@ -278,8 +356,9 @@ cd factory && python3 -m http.server
 Open <http://localhost:8000/dashboard.html>. Each job is a card with its issue
 and PR, a row of gate and review chips per round, its risk, builder model, cost
 (hover for cost per agent) and time. **Waiting on me** shows only the jobs that
-need you: plans to review and escalated PRs, each with a copy-ready command. Click a card to read every file the job wrote. To see the example
-jobs, copy `examples/jobs/` to `factory/jobs/` first.
+need you: plans to review and escalated PRs, each with a copy-ready command. Replays
+are marked with their result. Click a card to read every file the job wrote. To see the
+example jobs, copy `examples/jobs/` to `factory/jobs/` first.
 
 Cost is the API-equivalent price of each job's agents, read from Claude Code's
 transcripts. On a subscription plan it shows where the spend goes, not what

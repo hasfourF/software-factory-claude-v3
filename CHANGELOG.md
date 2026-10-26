@@ -96,6 +96,11 @@ Changes since ZazenCodes' v2, the version in their video.
   already filed. Proposed issues show as waiting in `job queue`; jobs record their
   `origin` and `metrics` reports by it.
 
+- **Docs that can't drift.** `factory/tests/test_docs.py` fails when the README, the
+  skill, `INSTALL.md`, `DESIGN.md`, the scripts and `config.json` disagree about
+  commands, flags, subcommands, labels, settings and their defaults, agents, scripts,
+  stages or links. The README now has a full command reference.
+
 ### Changed
 
 - `protected_paths` also covers `factory/bin/*`, `factory/setup.sh` and

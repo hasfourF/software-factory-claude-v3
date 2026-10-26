@@ -1,8 +1,8 @@
 # Design
 
-How the v2 factory works, and why it's built this way. The source is small
-enough to read in one sitting: one skill, eight agents, four scripts and a
-config file.
+How this factory works (v3, built on ZazenCodes' v2), and why it's built this way.
+The source is small enough to read in one sitting: one skill, ten agents, six
+scripts and a config file.
 
 ## The idea
 
@@ -16,24 +16,26 @@ good. Each stage leaves a file behind, so you can see what happened and why.
 
 | Piece | File | Job |
 |---|---|---|
-| Queue | GitHub issues labeled `factory` | What to build. Anyone can file an issue; only people with triage or write access can label it. |
+| Queue | GitHub issues labeled `factory` | What to build. Anyone can file an issue; only people with triage or write access can label it. Feeders (`factory/bin/feed`) can propose issues, but a person promotes them. |
 | Orchestrator | `.claude/skills/factory/SKILL.md` | The session that runs `/factory`. Starts jobs, spawns agents, calls the scripts. Writes nothing itself. |
 | Agents | `.claude/agents/*.md` | One file per role. Each reads files, writes exactly one file, and replies with one line. |
 | State | `factory/jobs/<job-id>/` | `job.json` plus every agent's file. Gitignored, local to the machine running the factory. |
-| Spine | `factory/bin/job`, `gate`, `route`, `doctor` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. `doctor` checks the setup. |
+| Spine | `factory/bin/job`, `gate`, `route` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. |
+| Tools | `factory/bin/doctor`, `metrics`, `feed` | `doctor` checks the setup, `metrics` reports how far to trust the factory, `feed` proposes issues. |
+| Knowledge | `factory/recipes/`, `factory/lessons.md` | The project's playbooks for common changes, and feedback from reviews, reworks and reverts. Agents read them; people approve them. |
 | Checks | `factory/checks.sh` | The repo's test, lint, typecheck and build commands. The only repo-specific script. |
 | Exit | the PR | Every job ends as a PR that closes its issue. Merging it is the approval. |
 
 ## Pipeline
 
 ```
-intake (fable)     → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT, posted as an issue comment
+intake (fable)     → ACCEPT (scope possibly changed, recipe chosen) | NEEDS-INFO | REJECT, posted as an issue comment
 route (script)     → reviewers + models from risk/surfaces via config.json
 worktree           → factory/<job-id> from origin/main
 spec-writer (opus) → spec.md
 plan review        → optional: spec posted on the issue; feedback revises it, approval builds it
 builder            → commits; first round pushes + opens draft PR "Closes #<n>"
-gate (script)      → checks.sh; FAIL → builder gets the log, no reviewers spawned
+gate (script)      → checks.sh, then acceptance commands and verify.sh; FAIL → builder gets the log, no reviewers spawned
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers (max rounds)
 approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
                      ESCALATE: PR ready, decision as PR comment, label factory:needs-human
@@ -41,7 +43,7 @@ approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
 
 `stage` in `job.json` is one of `intake`, `needs-info`, `spec`, `spec-review`,
 `build`, `gate`, `review`, `approve`, `merging`, `needs-human`, `merged`,
-`rejected`, `abandoned`.
+`rejected`, `abandoned`, and `replayed` for a calibration run.
 The legal moves are in `TRANSITIONS` at the top of `factory/bin/job`.
 
 ## Decisions
@@ -151,6 +153,53 @@ bill. The orchestrator's own tokens aren't attributed to a job. The
 transcript format isn't a documented interface, so a Claude Code update could
 break this.
 
+**The scripts decide what must not be automatic.** The approver is a language model,
+so some limits can't be its call. The gate raises flags from the diff (`large-diff`,
+`new-dependency`, `escalate-path`, `owned-path`, `unearned-area`), and `job` refuses to
+merge a change with one, or one whose risk is outside `auto_merge.risks`, by rewriting
+the decision to ESCALATE. CODEOWNERS is read from the base branch so a PR can't delete
+the rule that covers it.
+
+**Autonomy is earned, from numbers.** `metrics` counts, per area of the code, how
+often the approver merged with no human rework and whether anything was reverted. An
+area is earned at five decided jobs, 80% and no reverts, and then `auto_merge.areas`
+can name it. Until it is set the approver decides as before; once it is, a change that
+touches any other directory waits for a person. The sample is small by nature and the
+report says so.
+
+**The gate runs a spec's commands only if you allow them, and without a shell.** A
+spec is written by an agent that read an issue, so a `## Verification` command could
+be steered by whoever wrote that issue. They run only if they start with an entry of
+`gate.verify_allow` (empty by default), split into arguments and never passed to a
+shell, so `;`, pipes and `$(...)` are inert. Slow or app-level verification goes in
+`factory/verify.sh`, which is yours and protected from the branch.
+
+**Replay proves it on your own history, without touching GitHub.** To rebuild a merged
+PR fairly the agents must not be able to find the answer. The code is exported at the
+parent of the merge commit into a fresh one-commit repo, so there is no later history
+to read; the shipped diff is kept in `.git/factory-replay/`, outside the job folder;
+and `job` refuses any `gh` call from a replay, so nothing is commented, pushed or
+merged. Equivalence is judged by running the shipped PR's own tests on what the
+factory built, which checks behaviour, not resemblance.
+
+**Recipes steer builds, so a person approves each one.** An agent drafts a recipe from
+merged PRs, but into `recipes/drafts/`, which nothing reads; a person moves it up.
+Intake can only name a recipe that is a real file with a plain name.
+
+**Lessons are a prompt, so only trusted voices write them.** `lessons.md` is read by
+every builder and reviewer, which makes a comment on a PR a way to instruct them. Only
+the operator and the repo's owners, members and collaborators count; bots, strangers,
+the factory's own comments and one-word replies don't. Each entry carries the areas it
+touched so agents apply the ones that match. The curator proposes a tidy version; it
+never replaces the file.
+
+**Feeders propose; people promote.** A failing CI log or a comment in code is text
+nobody wrote for an agent, and the `factory` label is what lets text reach agents that
+can commit. So a feeder files `factory:proposed` and a person adds `factory`. A stable
+key per item, a cooldown and two caps keep it from refiling or flooding, and it files
+nothing when it can't tell what already exists. A source can be set to queue directly;
+`doctor` warns when it is.
+
 ## Guardrails
 
 - Only issues labeled `factory` run. Labels need triage or write access, so the
@@ -162,6 +211,10 @@ break this.
   through `gh pr merge`. The factory never deploys.
 - One PR per issue; at most `max_rounds` build rounds per job before a human
   is asked.
+- Spec commands run only if allowed, with no shell. Feeder issues, recipes and lessons
+  reach agents only after a person has promoted or approved them, or from trusted authors.
+- A replay never reaches GitHub, and the answer to it is not in the code the agents see.
+- Cost caps per job and per run, and a failure that repeats goes to a person.
 
 ## What changed from v1
 

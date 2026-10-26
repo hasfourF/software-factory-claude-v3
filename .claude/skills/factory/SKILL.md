@@ -110,8 +110,8 @@ into a labeled issue and prints its number. Run `/factory issue <n>`.
 
 ### /factory feed
 
-Find work the project already knows about and file it as issues. `factory/bin/feed` is a
-dry run and changes nothing: show the user what it found, which are new, which are
+Find work the project already knows about and file it as issues. `factory/bin/feed` (add
+`--source ci|deps|todo|custom:<name>` for one source) is a dry run and changes nothing: show the user what it found, which are new, which are
 duplicates of an open or recently closed issue, and which hit a cap. Ask before running
 `factory/bin/feed --create`, unless `feeders.auto_create` is true. It files issues labeled
 `factory:feed` and `factory:proposed`; they are **not** built until the user reads them
