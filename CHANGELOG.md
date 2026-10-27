@@ -30,6 +30,17 @@ Changes since ZazenCodes' v2, the version in their video.
   spent rounds fixing code they hadn't touched. The gate now reruns a failing
   `checks.sh` on the commit the branch started from; if it fails there too, the job
   goes to a human and `job guard` stops the run.
+- A rescoped PR merged by hand on GitHub skipped the follow-up issue for its deferred
+  work: `reconcile` marked the job merged without filing it. Both paths file it now.
+- The gate ran the checks on the worktree, not the commit, so an uncommitted edit could
+  make a commit pass that would fail as pushed. It now fails on uncommitted changes
+  before the checks or tracked files they change, and `job` refuses to approve or merge
+  a worktree with uncommitted changes since the gate.
+- `depends-on: #n` counted any closed issue as done, including one closed as not
+  planned, and found only the last 200 closed issues. It now asks for #n itself and
+  needs its factory job merged or the issue closed as completed.
+- `checks.sh` had no time limit, so a hung test in the merge gate held the merge lock
+  for good. `gate.checks_timeout` (30 minutes) kills it and everything it started.
 - Two sessions running `/factory run` would both resume the same jobs and put two
   builders on one branch. `job` now records the session that runs the factory in
   `factory/jobs/.run.json` and refuses changes from any other session while that

@@ -55,6 +55,7 @@
   ],
   "gate": {
     "retries": 1,
+    "checks_timeout": 1800,
     "max_diff_lines": 800,
     "scan_secrets": true,
     "dependency_files": [

@@ -1,7 +1,9 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -84,6 +86,28 @@ class Retries(unittest.TestCase):
         self.addCleanup(lambda: setattr(gate, "CHECKS", saved))
         code, _, _, failed_first = gate.run_checks(root, retries=2)
         self.assertEqual((0, 1), (code, failed_first))
+
+    def test_a_hung_check_is_killed_with_everything_it_started(self):
+        tmp, root = make_repo({"a": "a"})
+        self.addCleanup(tmp.cleanup)
+        pidfile = root / "child.pid"
+        script = root / "checks.sh"
+        script.write_text(f"sleep 60 & echo $! > {pidfile}\necho started\nwait\n")
+        saved, cfg = gate.CHECKS, gate.CONFIG["gate"]
+        before = dict(cfg)
+        gate.CHECKS = script
+        cfg["checks_timeout"] = 1
+        self.addCleanup(lambda: (setattr(gate, "CHECKS", saved), cfg.clear(), cfg.update(before)))
+        start = time.monotonic()
+        code, log, _, _ = gate.run_checks(root)
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(gate.TIMED_OUT, code)
+        self.assertIn("started", log)
+        self.assertIn("ran over gate.checks_timeout (1s)", log)
+        child = int(pidfile.read_text())
+        time.sleep(0.2)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)                                            # the background sleep died too
 
     def test_no_retries_means_one_run(self):
         tmp, root = make_repo({"count": "0\n"})
@@ -295,6 +319,30 @@ class WholeGate(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertNotIn("BASE:", md)
         self.assertFalse((self.fdir / "jobs" / ".base").exists())
+
+    def test_an_uncommitted_change_fails_the_gate_even_when_it_makes_the_checks_pass(self):
+        self.spec("AC1: true")
+        self.write("checks.sh", "grep -q 'fixed' calc.py\n")
+        (self.repo / "calc.py").write_text("x = 'fixed'\n")             # passes, but isn't what gets pushed
+        code, md = self.run_gate()
+        self.assertEqual(1, code)
+        self.assertIn("## Worktree", md)
+        self.assertIn("uncommitted before the checks ran: calc.py", md)
+
+    def test_checks_that_edit_tracked_files_fail_the_gate(self):
+        self.spec("AC1: true")
+        self.write("checks.sh", "echo reformatted > calc.py\n")
+        code, md = self.run_gate()
+        self.assertEqual(1, code)
+        self.assertIn("the checks changed tracked files: calc.py", md)
+
+    def test_ignored_build_output_is_fine(self):
+        self.spec("AC1: true")
+        commit(self.repo, {".gitignore": "build/\n"})
+        self.write("checks.sh", "mkdir -p build && echo x > build/out\n")
+        code, md = self.run_gate()
+        self.assertEqual(0, code)
+        self.assertNotIn("## Worktree", md)
 
     def test_verify_script_failure_fails_the_gate_and_gets_the_job_and_port(self):
         self.spec("AC1: true")
