@@ -313,8 +313,11 @@ whose specs plan to touch the same files don't build at the same time.
   security review even if intake didn't ask for it.
 - **Flaky checks** are retried (`gate.retries`) and reported as flaky. A hung
   `checks.sh` is killed after `gate.checks_timeout`.
-- **The gate tests the commit.** Uncommitted changes in the worktree, or checks
-  that edit tracked files, fail it; so does an uncommitted change after it passed.
+- **The gate tests the commit.** Uncommitted changes in the worktree fail it, and
+  so do checks that edit a file or create one `.gitignore` doesn't cover (reports,
+  coverage, build output): ignore generated output, delete it at the end of
+  `checks.sh`, or write it outside the worktree. An uncommitted change after the
+  gate passed stops the approval.
 - **Merge conflicts** go back to the builder; they don't wait for you.
 - A PR you merge or close by hand ends its job. `job stale` lists jobs stuck in
   one stage.

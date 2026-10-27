@@ -334,7 +334,14 @@ class WholeGate(unittest.TestCase):
         self.write("checks.sh", "echo reformatted > calc.py\n")
         code, md = self.run_gate()
         self.assertEqual(1, code)
-        self.assertIn("the checks changed tracked files: calc.py", md)
+        self.assertIn("the checks changed or created files: calc.py", md)
+
+    def test_a_new_report_the_checks_leave_behind_fails_the_gate_like_approval_would(self):
+        self.spec("AC1: true")
+        self.write("checks.sh", "echo 3 passed > report.txt\n")
+        code, md = self.run_gate()
+        self.assertEqual(1, code)
+        self.assertIn("the checks changed or created files: report.txt. Put generated output in .gitignore", md)
 
     def test_ignored_build_output_is_fine(self):
         self.spec("AC1: true")
