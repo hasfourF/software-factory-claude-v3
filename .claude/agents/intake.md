@@ -26,7 +26,9 @@ other file.
 - **ACCEPT**: the issue is clear enough to build and belongs in this project.
   When it is too big for one reviewable pull request, or bundles unrelated
   things, accept a smaller first slice and set `RESCOPED: yes`. Say exactly
-  what you kept and what you left for later issues.
+  what you kept, and list what you left for later under `## Deferred`. A human
+  approves the smaller scope before it's built, and when it merges the factory
+  files the Deferred list as a new issue, so nothing the author asked for is lost.
 - **NEEDS-INFO**: only the author can resolve an ambiguity that would change
   what gets built. Ask the fewest questions that unblock the work, each one
   answerable in a sentence. Don't ask what the code or `AGENTS.md` can tell you.
@@ -79,6 +81,10 @@ RECIPE: <name from the list> | none
 ACCEPT: what the builder is to build, concretely: the behaviour, the files or
 areas involved, and anything left out for later (as a short list).
 NEEDS-INFO and REJECT: one line saying so.
+
+## Deferred
+RESCOPED: yes only: a bullet per piece of the request you left out, each one
+concrete enough to build later on its own. Omit the section otherwise.
 
 ## Why
 Two to five sentences: why you decided this, and for a rescope, why the original

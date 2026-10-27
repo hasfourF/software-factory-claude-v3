@@ -359,6 +359,14 @@ class PlanReview(Quiet, unittest.TestCase):
         job.CONFIG["plan_review"] = "always"
         self.assertTrue(job.plan_wanted(self.spec_job("low")))
 
+    def test_a_rescope_always_waits_for_a_human(self):
+        job.CONFIG["plan_review"] = "never"
+        self.addCleanup(lambda: job.CONFIG.__setitem__("plan_review", "high"))
+        self.assertFalse(job.plan_wanted(self.spec_job("low")))
+        j = self.spec_job("low")
+        j["intake"]["rescoped"] = True
+        self.assertTrue(job.plan_wanted(j))
+
     def test_the_label_asks_for_a_review_whatever_the_mode(self):
         job.CONFIG["plan_review"] = "never"
         self.addCleanup(lambda: job.CONFIG.__setitem__("plan_review", "high"))
@@ -563,3 +571,125 @@ class OneSession(Quiet, unittest.TestCase):
             self.assertIn("another Claude Code session", err.getvalue())
             with contextlib.redirect_stdout(io.StringIO()):
                 job.main(["recipes"])
+
+
+class Deferred(Quiet, unittest.TestCase):
+    """A rescoped job closes its issue, so the work intake left out is filed as a proposed issue."""
+
+    def setUp(self):
+        super().setUp()
+        self.calls, self.existing = [], []
+        for name, fake in (("gh", self.gh), ("gh_json", lambda *a: self.existing)):
+            patcher = mock.patch.object(job, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.comments = []
+        job.comment = lambda kind, n, body: self.comments.append((kind, n, body))
+
+    def gh(self, *args):
+        self.calls.append(args)
+        return "https://github.com/o/r/issues/42\n"
+
+    def rescoped(self, deferred="## Deferred\n- trigonometry\n- logarithms\n\n"):
+        j = self.make(stage="merging", round=1, issue=7, title="Scientific calculator",
+                      intake={"risk": "low", "rescoped": True})
+        (self.dir(j) / "intake.md").write_text(f"DECISION: ACCEPT\nRESCOPED: yes\n\n## Scope\nmultiply\n\n{deferred}## Why\nbig\n")
+        return j
+
+    def created(self):
+        return [c for c in self.calls if c[:2] == ("issue", "create")]
+
+    def test_the_rest_is_filed_as_a_proposed_issue_and_linked(self):
+        j = self.rescoped()
+        job.file_deferred(j)
+        (create,) = self.created()
+        self.assertIn("Scientific calculator (the rest of #7)", create)
+        self.assertEqual("factory:proposed", create[create.index("--label") + 1])
+        body = create[create.index("--body") + 1]
+        self.assertIn("- trigonometry\n- logarithms", body)
+        self.assertIn("<!-- factory:deferred-from #7 -->", body)
+        self.assertEqual(42, j["deferred_issue"])
+        self.assertEqual([("issue", 7)], [c[:2] for c in self.comments])
+        self.assertIn("#42", self.comments[0][2])
+
+    def test_merging_files_it(self):
+        j = self.rescoped()
+        with mock.patch.object(job, "pr_state", lambda j: "MERGED"), \
+                mock.patch.object(job, "remove_worktree", lambda j, delete_branch: None):
+            job.advance(j, "merged")
+        self.assertEqual(1, len(self.created()))
+        self.assertEqual(42, j["deferred_issue"])
+
+    def test_filing_twice_or_after_a_crash_finds_the_first_issue(self):
+        j = self.rescoped()
+        job.file_deferred(j)
+        job.file_deferred(j)                                  # already recorded
+        self.assertEqual(1, len(self.created()))
+        j = self.rescoped()
+        self.existing = [{"number": 42, "body": "<!-- factory:deferred-from #7 -->\nx"}]
+        job.file_deferred(j)                                  # created, then crashed before job.json was saved
+        self.assertEqual(1, len(self.created()))
+        self.assertEqual(42, j["deferred_issue"])
+
+    def test_without_a_deferred_list_it_points_at_intakes_comment(self):
+        job.file_deferred(self.rescoped(deferred=""))
+        body = self.created()[0][self.created()[0].index("--body") + 1]
+        self.assertIn("see its comment on #7", body)
+
+    def test_a_full_scope_job_or_a_replay_files_nothing(self):
+        j = self.rescoped()
+        j["intake"]["rescoped"] = False
+        job.file_deferred(j)
+        j = self.rescoped()
+        j["replay"] = {"pr": 3}
+        job.file_deferred(j)
+        self.assertEqual([], self.calls)
+
+
+class RedBase(Quiet, unittest.TestCase):
+    """When checks.sh fails where the branch started, the branch didn't break it."""
+
+    def failed_gate(self, base_line):
+        tmp, repo = make_repo({"a.txt": "a"})
+        self.addCleanup(tmp.cleanup)
+        head = git(repo, "rev-parse", "HEAD").strip()
+        j = self.make(stage="gate", round=1, worktree=str(repo))
+        (self.dir(j) / "round-1").mkdir()
+        (self.dir(j) / "round-1" / "checks.md").write_text(f"GATE: FAIL\nCOMMIT: {head}\nFLAGS: none\n{base_line}\n")
+        return j, head
+
+    def test_a_red_base_goes_to_a_human_not_another_build(self):
+        j, head = self.failed_gate("BASE: red " + "a" * 40 + "\n")
+        with self.assertRaisesRegex(job.Refused, "fails on main at aaaaaaa too"):
+            job.advance(j, "build")
+        self.assertEqual(1, j["round"])
+        self.assertEqual("needs-human", job.advance(j, "needs-human")["stage"])
+        self.assertIn("Fix main, then `/factory rework 1`", (self.dir(j) / "decision.md").read_text())
+
+    def test_a_green_base_means_the_branch_broke_it(self):
+        j, _ = self.failed_gate("BASE: green " + "a" * 40 + "\n")
+        self.assertEqual(2, job.advance(j, "build")["round"])
+
+    def test_guard_stops_the_run_while_the_base_tip_is_red(self):
+        tmp, repo = make_repo({"a.txt": "a"})
+        self.addCleanup(tmp.cleanup)
+        tip = git(repo, "rev-parse", "HEAD").strip()
+        j = self.make(stage="build", round=1, started="2026-01-01T00:00:00Z")
+        job.save(j)
+
+        def guard():
+            out = io.StringIO()
+            with mock.patch.object(job, "REPO", repo), mock.patch.object(job, "cost", lambda j: (0.0, {})), \
+                    contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as stop:
+                job.cmd_guard(job.load(j["id"]), "2026-01-01T00:00:00Z")
+                raise SystemExit(0)
+            return stop.exception.code, out.getvalue()
+
+        self.assertEqual(0, guard()[0])
+        (job.JOBS / ".base").mkdir()
+        (job.JOBS / ".base" / f"{tip}.json").write_text('{"result": "red"}')
+        code, out = guard()
+        self.assertEqual(4, code)
+        self.assertIn(f"fails on main at {tip[:7]}", out)
+        (job.JOBS / ".base" / f"{tip}.json").write_text('{"result": "green"}')
+        self.assertEqual(0, guard()[0])

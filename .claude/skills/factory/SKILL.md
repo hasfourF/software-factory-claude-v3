@@ -190,8 +190,8 @@ update build.md.` appended.
 ## One job
 
 Before you spawn any agent for a job, run `factory/bin/job guard <id> --run $RUN_START`.
-Exit 4: the run's cost cap is spent; spawn nothing more, let running agents
-finish, and say so in the report. Exit 3: the job went over its own cap and is
+Exit 4: the run's cost cap is spent, or `checks.sh` fails on the base branch;
+spawn nothing more, let running agents finish, and say which in the report. Exit 3: the job went over its own cap and is
 now `needs-human`; stop it. Exit 0: go ahead.
 
 Resuming: read the job's stage from `factory/bin/job sync <id>` and jump to that
@@ -257,9 +257,9 @@ The builder pushes the branch; in round 1 it opens the draft PR. Wait for
 `checks.sh`, scans added lines for secrets, and writes `FLAGS` into `checks.md`.
 
 - PASS: `job advance <id> review`.
-- FAIL: `job advance <id> build`. When no rounds are left, or the failure is the
-  same as the previous round's, it refuses and says to go to `needs-human`; do
-  that. Otherwise resume the builder with `SendMessage` to `builder-<id>`:
+- FAIL: `job advance <id> build`. When no rounds are left, the failure is the
+  same as the previous round's, or `checks.sh` fails on the base branch too, it
+  refuses and says to go to `needs-human`; do that. Otherwise resume the builder with `SendMessage` to `builder-<id>`:
   `Round <N> failed the gate. Read factory/jobs/<id>/round-<N>/checks.md, fix it, commit, push and update build.md for round <N+1>.`
   If no `builder-<id>` is running (a new session), spawn one with
   `<paths> Build round <N+1>. Port: <port>. Read the earlier rounds first.`
