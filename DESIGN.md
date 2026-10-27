@@ -103,8 +103,11 @@ gated again, because another job may have merged since it was tested.
 **You can read the plan first.** A wrong spec is the most expensive mistake the
 factory makes: it gets built, gated, reviewed and escalated before anyone
 notices. So after the spec-writer, `job plan-needed` decides (the `factory:plan`
-label, or `plan_review` by risk) whether the spec is posted on the issue and the
-job parks in `spec-review`, like `needs-info`. Your comments revise the spec, at
+label, a rescope, or `plan_review` by risk) whether the spec is posted on the issue
+and the job parks in `spec-review`, like `needs-info`. A rescope always waits:
+the PR closes the issue, so a human agrees to the smaller scope first, and on
+merge `job` files intake's `## Deferred` list as a `factory:proposed` issue that
+waits for you, like a feeder's. Your comments revise the spec, at
 most `max_spec_revisions` times, and the old draft is kept as `spec-<k>.md`.
 Approval is the `factory:plan-approved` label (a label needs triage access) or a
 `/approve` comment from the operator. The issue's author can ask for changes but
@@ -142,6 +145,12 @@ comment and run `/factory rework <n>` to send your comments to the builder.
 **State is files, so runs resume.** Every fact the orchestrator needs is in
 `factory/jobs/`. If the session dies or compacts, a fresh `/factory run` reads
 the queue and resumes every job from its stage.
+
+**A red base branch stops the run.** When `checks.sh` fails, the gate runs it
+again on the commit the branch started from (once per commit, cached in
+`factory/jobs/.base/`). If it fails there too, the branch didn't cause it, so the
+job goes to a human instead of spending build rounds on someone else's breakage,
+and `job guard` starts no new work until the base branch is fixed.
 
 **One session at a time.** Two sessions running `/factory run` would both resume
 the same jobs and put two builders on one branch. The first `job` command that

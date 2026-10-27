@@ -17,6 +17,12 @@ so a branch can't change the checks it is judged by. It fails when:
   - an acceptance command in the spec's `## Verification` fails (see below);
   - `factory/verify.sh`, if the project has one, exits non-zero.
 
+When checks.sh fails, the gate runs it once more on the commit the branch started
+from, in a scratch checkout, and writes `BASE: red <commit>` or `BASE: green <commit>`
+into checks.md (`unknown` if the checkout or setup.sh fails). Red means the branch
+didn't cause the failure, so `job` sends it to a human instead of another build,
+and `job guard` stops the run. Each commit is run once: factory/jobs/.base/<commit>.json.
+
 Acceptance commands let the gate check the spec itself instead of trusting
 build.md. Each line of `## Verification` is `AC1: <command>`. The command is split
 like a shell would but never run through one (no pipes, no `;`), and only runs if
@@ -49,6 +55,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -267,6 +274,30 @@ def run_checks(worktree, retries=0):
     return res.returncode, logs[-1], int(time.monotonic() - start), len(logs) - 1
 
 
+def base_checks(worktree, retries):
+    """(result, commit): does checks.sh pass where the branch started? red, green or unknown, cached per commit."""
+    base = git(worktree, "merge-base", "HEAD", f"origin/{CONFIG['base_branch']}").strip()
+    cache = FACTORY / "jobs" / ".base" / f"{base}.json"
+    if cache.exists():
+        return json.loads(cache.read_text())["result"], base
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "base"
+        added = subprocess.run(["git", "worktree", "add", "--detach", str(tree), base], cwd=worktree,
+                               capture_output=True, text=True)
+        if added.returncode != 0:
+            return "unknown", base
+        try:
+            setup = FACTORY / "setup.sh"
+            if setup.exists() and subprocess.run(["bash", str(setup)], cwd=tree, capture_output=True).returncode != 0:
+                return "unknown", base  # can't tell, and not worth caching: the next failure tries again
+            result = "green" if run_checks(tree, retries)[0] == 0 else "red"
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=worktree, capture_output=True)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"result": result, "checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+    return result, base
+
+
 def gate(job_id, merge):
     job_dir = FACTORY / "jobs" / job_id
     job = json.loads((job_dir / "job.json").read_text())
@@ -280,6 +311,7 @@ def gate(job_id, merge):
     secrets = find_secrets(worktree) if settings.get("scan_secrets", True) else []
     code, log, seconds, failed_first = run_checks(worktree, settings.get("retries", 0))
     flaky = code == 0 and failed_first > 0
+    base = base_checks(worktree, settings.get("retries", 0)) if code != 0 else None
     # The slower, project-specific verification only runs on a branch that already passes the fast checks.
     allow = settings.get("verify_allow") or []
     commands = verification(job_dir)
@@ -319,7 +351,8 @@ def gate(job_id, merge):
     (round_dir / "changed-files.txt").write_text("".join(f"{p}\n" for p in paths))
     tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
     (round_dir / f"{name}.md").write_text(
-        f"GATE: {verdict}\nCOMMIT: {commit}\nFLAGS: {', '.join(flags) or 'none'}\n\n"
+        f"GATE: {verdict}\nCOMMIT: {commit}\nFLAGS: {', '.join(flags) or 'none'}\n"
+        + (f"BASE: {base[0]} {base[1]}\n" if base else "") + "\n"
         "## Protected paths\n"
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
         + "\n\n## Secrets\n"
@@ -336,6 +369,11 @@ def gate(job_id, merge):
         + (f"\n\n## verify.sh\n{'Passed' if script_ok else 'FAILED'}.\n\n```\n{script_out}\n```" if ran_script else "")
         + (f"\n\n## Flaky\nchecks.sh failed {failed_first} time(s) before it passed. Treat the tests it ran as suspect."
            if flaky else "")
+        + ({"red": f"\n\n## Base branch\nchecks.sh fails on {base[1][:7]}, where this branch started, too. "
+                    "The branch didn't cause this failure; fix the base branch first.",
+            "green": f"\n\n## Base branch\nchecks.sh passes on {base[1][:7]}, where this branch started, so the "
+                     "branch caused this failure.",
+            "unknown": f"\n\n## Base branch\nCouldn't run checks.sh on {base[1][:7]} to compare."}[base[0]] if base else "")
         + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     notes = [f"protected paths changed: {', '.join(protected)}"] if protected else []
@@ -343,6 +381,7 @@ def gate(job_id, merge):
     notes += [f"{sum(1 for r in acceptance if r[2] in {'fail', 'timeout'})} acceptance command(s) failed"] \
         if not acceptance_ok else []
     notes += ["verify.sh failed"] if not script_ok else []
+    notes += [f"fails on {CONFIG['base_branch']} too"] if base and base[0] == "red" else []
     notes += ["flaky: passed on retry"] if flaky else []
     notes += [f"flags: {', '.join(flags)}"] if flags else []
     print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"

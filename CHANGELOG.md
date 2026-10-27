@@ -23,6 +23,13 @@ Changes since ZazenCodes' v2, the version in their video.
   passed, so a push after the gate makes GitHub refuse the merge. A branch that moved
   after the gate can no longer be approved or merged on reviews of the older commit: the
   job goes to a human.
+- A rescoped job built a smaller feature than its issue asked for, and its PR closed
+  the issue, so the rest disappeared. A rescope now always waits for plan review, and
+  on merge intake's `## Deferred` list is filed as a `factory:proposed` issue.
+- When `checks.sh` broke on the base branch, every job failed the gate and builders
+  spent rounds fixing code they hadn't touched. The gate now reruns a failing
+  `checks.sh` on the commit the branch started from; if it fails there too, the job
+  goes to a human and `job guard` stops the run.
 - Two sessions running `/factory run` would both resume the same jobs and put two
   builders on one branch. `job` now records the session that runs the factory in
   `factory/jobs/.run.json` and refuses changes from any other session while that

@@ -153,8 +153,9 @@ Everything is in `factory/config.json`. The ones you'll touch:
 ## Review the plan first
 
 Add the `factory:plan` label to an issue, or set `"plan_review": "high"` in
-`factory/config.json` (the default) to do it for every high-risk job. After the
-spec is written the factory posts it on the issue and waits:
+`factory/config.json` (the default) to do it for every high-risk job. A job that
+intake rescoped always waits, because it builds less than the issue asked for.
+After the spec is written the factory posts it on the issue and waits:
 
 - **Comment** with what's missing or wrong. The spec-writer revises it (twice at
   most) and posts it again.

@@ -268,6 +268,34 @@ class WholeGate(unittest.TestCase):
         self.assertIn("Not run: checks.sh failed first", md)
         self.assertFalse((self.repo / "ran-verify").exists())
 
+    def test_a_failure_the_base_branch_shares_is_marked_red_and_cached(self):
+        runs = Path(self.work.name) / "runs"
+        self.write("checks.sh", f"echo run >> {runs}\nexit 3\n")
+        code, md = self.run_gate()
+        self.assertEqual(1, code)
+        base = git(self.repo, "merge-base", "HEAD", "origin/main").strip()
+        self.assertIn(f"BASE: red {base}", md.split("\n\n")[0])
+        self.assertIn("The branch didn't cause this failure", md)
+        self.assertEqual(2, len(runs.read_text().splitlines()))         # the branch, then the base
+        self.run_gate()
+        self.assertEqual(3, len(runs.read_text().splitlines()))         # the base result was cached
+        self.assertEqual("red", json.loads((self.fdir / "jobs" / ".base" / f"{base}.json").read_text())["result"])
+        self.assertEqual([], [l for l in git(self.repo, "worktree", "list").splitlines()[1:]])  # scratch checkout gone
+
+    def test_a_failure_only_the_branch_has_is_marked_green(self):
+        self.write("checks.sh", "grep -q 'x = 1' calc.py\n")             # the base has x = 1, the branch x = 2
+        code, md = self.run_gate()
+        self.assertEqual(1, code)
+        self.assertRegex(md.split("\n\n")[0], r"\nBASE: green [0-9a-f]{40}$")
+        self.assertIn("so the branch caused this failure", md)
+
+    def test_a_passing_gate_never_checks_the_base(self):
+        self.spec("AC1: true")
+        code, md = self.run_gate()
+        self.assertEqual(0, code)
+        self.assertNotIn("BASE:", md)
+        self.assertFalse((self.fdir / "jobs" / ".base").exists())
+
     def test_verify_script_failure_fails_the_gate_and_gets_the_job_and_port(self):
         self.spec("AC1: true")
         self.write("verify.sh", 'echo "job=$FACTORY_JOB port=$FACTORY_PORT"; exit 7\n')
