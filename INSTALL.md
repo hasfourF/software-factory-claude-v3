@@ -97,8 +97,14 @@ fails. If the project needs nothing, delete the file. Keep it non-interactive.
 heavy for `checks.sh`: start the app on `$FACTORY_PORT` and hit it, run end-to-end or
 visual-regression tests, check coverage of the changed lines. The gate runs it in the
 job's worktree after `checks.sh` passes, with `$FACTORY_JOB` and `$FACTORY_PORT` set,
-and fails the job if it exits non-zero. Offer to write one if the project has such
-tests; it must start and stop anything it starts. Skip it otherwise.
+and fails the job if it exits non-zero. Ask the user for the two or three journeys
+that matter most to their users (for a shop: pay for an order, refund it, a customer
+can't see another customer's orders), and offer to write a `verify.sh` that walks
+those through the running app, or runs the project's existing end-to-end tests for
+them. Unit tests pass while a journey breaks; this catches that. It must use its own
+test data, start and stop anything it starts, and leave no file `.gitignore` doesn't
+cover (the gate fails on those). If the user names none and the project has no such
+tests, skip it.
 
 **`factory/config.json`.**
 
@@ -110,7 +116,9 @@ tests; it must start and stop anything it starts. Skip it otherwise.
   patterns, so `*` also matches `/`. The gate fails a branch that modifies or
   deletes a matching file; new tests are fine.
 - `force_security_paths`, `always_escalate_paths`, `gate.dependency_files`: add
-  this project's own. A diff that touches a security path gets the security
+  this project's own. An escalate path is code the factory may change with the user's
+  approval (pricing, refunds, accounting exports); a protected path is a file it must
+  never change. Don't use one for the other. A diff that touches a security path gets the security
   review whatever intake said; one that touches an escalate path, changes a
   dependency manifest or exceeds `gate.max_diff_lines` always goes to a human.
 - `plan_review`: `high` makes the factory post the spec on the issue and wait
@@ -139,8 +147,10 @@ tests; it must start and stop anything it starts. Skip it otherwise.
   `auto_create` it warns harder. Leave `auto_create` false. Custom sources (Sentry,
   Linear, anything with an API) are a command in `feeders.custom` that prints a JSON
   list of `{key, title, body, priority}`; offer to write one only if asked.
-- `auto_merge`: leave `risks` as all three and `areas` as `null` for now. They are
-  the autonomy dial: `risks` limits which risk levels the factory may merge itself,
+- `auto_merge`: ask the user how to start. `risks: []` means nothing merges by
+  itself: every PR waits for them, and `/factory metrics` builds a record they can
+  widen it from. Leaving `risks` as all three lets the approver merge from the first
+  run. Leave `areas` as `null` either way. They are the autonomy dial: `risks` limits which risk levels the factory may merge itself,
   and a list in `areas` (top-level directories) means a change touching any other
   directory always waits for the user. `factory/bin/metrics` says when an area has
   earned it; don't set it from a guess.
@@ -161,8 +171,6 @@ replies or `hooks:` frontmatter:
   Also tell `reviewer-ux.md` and `reviewer-ui.md` how to start the app, if
   `AGENTS.md` doesn't already.
 - `reviewer-ux.md`: the kinds of users the app has.
-- `approver.md`: what a human must always see in this project, added to the
-  ESCALATE list.
 - `intake.md`: one line under **Decide** saying what the project is for, so
   intake can tell what belongs.
 
@@ -182,6 +190,35 @@ stub. Existing instructions stay as they are; only add. Make sure it says:
   list. Show the user the existing commands next to `checks.sh`, and with their OK
   replace the list with `bash factory/checks.sh`, keeping only extra commands that
   `checks.sh` really doesn't cover. This is the one place the "only add" rule gives way.
+
+Then draft a `## Rules for agents` section with the user. Tests don't show whether
+an agent understood the business; this does, and every agent reads it. Propose
+what the code shows, and ask for what it can't: the business rules and which
+decisions are the user's. Never invent a rule. Keep it short; link longer
+documents instead of copying them. The approver escalates on `Needs a human`, and
+the code reviewer flags a broken `Never` rule:
+
+```markdown
+## Rules for agents
+
+### Never
+- <a rule that must hold, e.g. "Money uses the `Money` type in src/money.ts; never floats.">
+
+### Needs a human
+- <a change the user decides, e.g. "pricing or refund eligibility">
+
+### Reuse
+- <an existing service or component to use, with its path>
+
+### Follow these examples
+- <path>: <the kind of change it shows, and what makes it the one to copy>
+```
+
+For `Follow these examples`, find two or three existing implementations of the
+changes the project makes most often (an endpoint, a screen, a migration, a test)
+and ask the user which are the good ones. A path and a reason beat "follow our
+conventions". For a project with a UI, add where the design system lives, if
+`reviewer-ui.md` doesn't already say.
 
 Then add a short section:
 
@@ -280,7 +317,13 @@ run.
 Then tell the user, in a few lines:
 
 - Label one or two small issues `factory`, then run `/factory run` in Claude
-  Code from the project root.
+  Code from the project root. An issue that names the outcome, the constraints and
+  what's out of scope leaves intake and the spec-writer far fewer product decisions
+  to guess. Offer to add `.github/ISSUE_TEMPLATE/factory.md` with those three
+  headings (`## Outcome`, `## Constraints`, `## Out of scope`); don't give it a
+  `labels:` line, because only people with triage access should queue work.
+- `## Rules for agents` in `AGENTS.md` is theirs to grow: when a PR shows an agent
+  missed a rule, add it there.
 - Every job ends as a PR. The approver merges what it approves; the rest wait
   labeled `factory:needs-human`. Approve one by merging it on GitHub, or
   comment on it and run `/factory rework <issue>`.

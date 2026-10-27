@@ -195,7 +195,15 @@ you can see whether feeder work merges as well as work you filed.
 
 ## Teach it your project
 
-Two things make the factory build like a member of your team instead of a stranger.
+Three things make the factory build like a member of your team instead of a stranger.
+
+**Rules.** Passing tests don't show that an agent understood your business. A
+`## Rules for agents` section in `AGENTS.md` does it: what must never happen (money
+is never a float, every stock change writes an audit entry), what needs a human
+(pricing, refunds), the services to reuse, and two or three existing files to copy
+for the changes you make most, each with why. Every agent reads it, the code
+reviewer flags a broken rule, and the approver escalates anything on the human
+list. The installer drafts it with you.
 
 **Recipes.** A recipe is your project's playbook for a kind of change you make often:
 add an endpoint, add a migration, add a feature flag. It lists the steps in order, the
@@ -244,8 +252,12 @@ The gate is only as good as what it runs, so there are three ways to make it str
   comes from an agent that read an issue, so nothing runs until you list command
   prefixes in `gate.verify_allow`, and commands run without a shell (no pipes, no `;`).
 - **`factory/verify.sh`.** For what is too slow for `checks.sh`: boot the app and hit
-  it, end-to-end or visual-regression tests, coverage of changed lines. It runs after
-  `checks.sh` passes, with `$FACTORY_PORT` set.
+  it, end-to-end or visual-regression tests, coverage of changed lines. Best spent on
+  the two or three journeys your users can't live without, which unit tests can pass
+  while breaking. It runs after `checks.sh` passes, with `$FACTORY_JOB` and
+  `$FACTORY_PORT` set. Give it its own test data (per job, if jobs run at once: a
+  database named after `$FACTORY_JOB`), and have it leave no file `.gitignore`
+  doesn't cover.
 - **`CODEOWNERS`.** A change to a path that has an owner always waits for a human
   (the rules are read from the base branch, so a branch can't edit its way out). A
   catch-all `* @team` line doesn't count, or nothing could ever auto-merge; to send

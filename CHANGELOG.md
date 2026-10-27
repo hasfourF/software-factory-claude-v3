@@ -48,6 +48,13 @@ Changes since ZazenCodes' v2, the version in their video.
 
 ### Added
 
+- **Rules for agents.** The installer drafts a `## Rules for agents` section in
+  `AGENTS.md` with the user: rules that must never break, decisions that need a human,
+  services to reuse and two or three files to copy. The code reviewer flags a broken
+  rule and the approver escalates on the human list, so it replaces tailoring the
+  approver's prompt. The installer also asks for the key user journeys to cover in
+  `verify.sh`, whether to start with nothing auto-merging (`auto_merge.risks: []`), and
+  offers an issue template.
 - `factory/bin/policy`, a `PreToolUse` hook on every agent with a shell. Agents share
   your `gh` login, so only their prompts kept them from merging or pushing to the base
   branch; the hook refuses `gh pr merge`, `gh api` writes and pushes outside `factory/*`.
