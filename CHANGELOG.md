@@ -17,6 +17,12 @@ Changes since ZazenCodes' v2, the version in their video.
   got a 404, and that one failure rejected the whole load. It now ignores hidden folders and
   skips a job folder whose `job.json` isn't written yet (it exists a few seconds before),
   and a malformed `job.json` is shown as a banner instead of blanking the board.
+- Two approved jobs could merge at once, each gated against a `main` without the other's
+  change. `job merge` now holds a lock (`factory/jobs/.merge.lock`) from syncing with main
+  to the merge, and passes `gh pr merge --match-head-commit` the commit the merge gate
+  passed, so a push after the gate makes GitHub refuse the merge. A branch that moved
+  after the gate can no longer be approved or merged on reviews of the older commit: the
+  job goes to a human.
 
 ### Added
 

@@ -247,6 +247,90 @@ class Refusals(Quiet, unittest.TestCase):
         self.assertEqual(2, job.advance(j, "build")["round"])
 
 
+class MergeSafety(Quiet, unittest.TestCase):
+    """What merges is the commit the gate passed and the reviews read, one job at a time."""
+
+    def gated(self, stage, **fields):
+        """A job whose branch is pushed to a real origin and whose round-1 gate passed on its HEAD."""
+        tmp, repo = make_repo({"a.txt": "a"})
+        self.addCleanup(tmp.cleanup)
+        origin = Path(tmp.name) / "origin.git"
+        git(repo, "init", "-q", "--bare", str(origin))
+        git(repo, "remote", "add", "origin", str(origin))
+        git(repo, "checkout", "-q", "-b", "factory/001-x")
+        head = commit(repo, {"a.txt": "b"})
+        git(repo, "push", "-q", "origin", "main", "factory/001-x")
+        j = self.make(stage=stage, round=1, worktree=str(repo), intake={"risk": "low"},
+                      agents={"builder": "sonnet", "reviewers": {"code": "haiku"}}, reviews={"code": "PASS"}, **fields)
+        rd = self.dir(j) / "round-1"
+        rd.mkdir(exist_ok=True)
+        (rd / "checks.md").write_text(f"GATE: PASS\nCOMMIT: {head}\nFLAGS: none\n\n")
+        (rd / "review-code.md").write_text("VERDICT: PASS\n")
+        (self.dir(j) / "decision.md").write_text("APPROVE\n\n## Why\nfine\n")
+        return j, repo, head
+
+    def test_reviews_of_an_older_commit_cannot_approve(self):
+        j, _, _ = self.gated("review")
+        self.assertEqual("approve", job.advance(j, "approve")["stage"])
+        j, repo, _ = self.gated("review")
+        commit(repo, {"a.txt": "c"}, "after the gate")
+        with self.assertRaisesRegex(job.Refused, "moved after the gate"):
+            job.advance(j, "approve")
+        with self.assertRaisesRegex(job.Refused, "needs-human"):
+            job.advance(j, "build")
+        self.assertEqual("needs-human", job.advance(j, "needs-human")["stage"])
+        self.assertIn("moved after the gate", (self.dir(j) / "decision.md").read_text())
+
+    def merge(self, j, merged_state="OPEN"):
+        calls = []
+
+        def gh(*args):
+            calls.append(args)
+            return ""
+
+        def gh_json(*args):
+            return {"state": "MERGED" if any("merge" in c for c in calls) else merged_state, "isDraft": False}
+
+        fake_bin = Path(self.tmp.name) / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        (fake_bin / "gate").write_text("#!/bin/sh\nexit 0\n")
+        (fake_bin / "gate").chmod(0o755)
+        with mock.patch.object(job, "gh", gh), mock.patch.object(job, "gh_json", gh_json), \
+                mock.patch.object(job, "BIN", fake_bin), mock.patch.object(job, "cost", lambda j: (0.0, {})), \
+                mock.patch.object(job, "remove_worktree", lambda j, delete_branch: None), \
+                mock.patch.object(job, "save", lambda j: None), contextlib.redirect_stdout(io.StringIO()):
+            job.cmd_merge(j)
+        return calls
+
+    def test_the_merge_names_the_commit_the_gate_passed(self):
+        j, repo, head = self.gated("merging")
+        (self.dir(j) / "round-1" / "merge-checks.md").write_text(f"GATE: PASS\nCOMMIT: {head}\nFLAGS: none\n\n")
+        calls = self.merge(j)
+        merges = [c for c in calls if c[:2] == ("pr", "merge")]
+        self.assertEqual(1, len(merges))
+        self.assertEqual(["--match-head-commit", head], list(merges[0][-2:]))
+        self.assertEqual("merged", j["stage"])
+
+    def test_an_approval_of_an_older_commit_goes_to_a_human(self):
+        j, repo, _ = self.gated("approve")
+        commit(repo, {"a.txt": "c"}, "after the approval")
+        calls = self.merge(j)
+        self.assertEqual("needs-human", j["stage"])
+        self.assertFalse([c for c in calls if c[:2] == ("pr", "merge")])
+        self.assertTrue((self.dir(j) / "decision.md").read_text().startswith("ESCALATE"))
+
+    def test_merges_wait_for_each_other(self):
+        merged = []
+        with mock.patch.object(job, "merge", lambda j: merged.append(j["id"])):
+            with job.merge_lock():
+                t = threading.Thread(target=job.cmd_merge, args=({"id": "002-y"},))
+                t.start()
+                t.join(0.3)
+                self.assertEqual([], merged)  # still waiting for the lock
+            t.join(5)
+        self.assertEqual(["002-y"], merged)
+
+
 class PlanReview(Quiet, unittest.TestCase):
     def setUp(self):
         super().setUp()

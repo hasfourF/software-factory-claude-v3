@@ -32,6 +32,7 @@ Usage:
 <job> is a job id (004-dark-mode) or an issue number (12).
 """
 
+import contextlib
 import fcntl
 import fnmatch
 import hashlib
@@ -151,6 +152,15 @@ def save(job):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=2) + "\n")
     tmp.replace(path)
+
+
+@contextlib.contextmanager
+def merge_lock():
+    """One merge at a time, so each job syncs with and gates against what the one before it merged."""
+    JOBS.mkdir(parents=True, exist_ok=True)
+    with open(JOBS / ".merge.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
 
 
 def all_jobs():
@@ -425,6 +435,13 @@ def git(job, *args, check=True):
     return run(["git", *args], cwd=job["worktree"], check=check)
 
 
+def moved_since_gate(job):
+    """Why the branch is no longer the commit the gate passed (and the reviews read), or None."""
+    gated = header(round_dir(job) / "checks.md").get("COMMIT", "")
+    head = git(job, "rev-parse", "HEAD").stdout.strip()
+    return None if head == gated else f"{job['branch']} moved after the gate: it checked {gated[:7]}, HEAD is {head[:7]}"
+
+
 def pr_state(job):
     return gh_json("pr", "view", str(job["pr"]), "--json", "state")["state"]
 
@@ -677,6 +694,11 @@ def _advance(job, stage):
         changes = [r for r, v in job["reviews"].items() if v == "CHANGES"]
         if stage == "approve":
             require(not changes, f"reviews want CHANGES: {', '.join(changes)}")
+            moved = moved_since_gate(job)
+            require(not moved, f"{moved}: go to needs-human")
+        elif not changes and (moved := moved_since_gate(job)):
+            require(stage == "needs-human", f"{moved}: go to needs-human")
+            escalate(job, f"{moved}. Every review passed, but not the code that would merge.")
         else:
             require(changes, "every review passed")
             last = job["round"] >= job["round_limit"]
@@ -867,8 +889,20 @@ def cmd_queue():
 
 
 def cmd_merge(job):
+    with merge_lock():
+        merge(job)
+
+
+def merge(job):
+    def fail(why):
+        escalate(job, why)
+        save(advance(sync(job), "needs-human"))
+        print(f"{job['id']}: needs-human: {why.splitlines()[0]}")
+
     sync(job)
     if job["stage"] == "approve":
+        if moved := moved_since_gate(job):
+            return fail(f"{moved}. The approver passed code that would not be what merges.")
         save(advance(job, "merging"))
     if job["stage"] != "merging":
         die(f"{job['id']} is in {job['stage']}, not approve or merging")
@@ -876,11 +910,6 @@ def cmd_merge(job):
         save(advance(sync(job), "merged"))
         print(f"{job['id']}: merged PR #{job['pr']}")
         return
-
-    def fail(why):
-        escalate(job, why)
-        save(advance(sync(job), "needs-human"))
-        print(f"{job['id']}: needs-human: {why.splitlines()[0]}")
 
     git(job, "fetch", "origin", BASE)
     merged = git(job, "merge", "--no-edit", f"origin/{BASE}", check=False)
@@ -907,7 +936,9 @@ def cmd_merge(job):
         git(job, "push", "origin", job["branch"])
         if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
             gh("pr", "ready", str(job["pr"]))
-        gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
+        # Only the commit the gate just passed: if anything pushed since, GitHub refuses the merge.
+        gated = header(round_dir(job) / "merge-checks.md")["COMMIT"]
+        gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}", "--match-head-commit", gated)
     except Refused as e:
         return fail(f"The merge failed:\n\n```\n{e}\n```")
     # GitHub may already have deleted the branch on merge.

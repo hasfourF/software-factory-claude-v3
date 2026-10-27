@@ -268,7 +268,8 @@ Print each verdict (the file's first line) as it lands. If a reviewer finishes
 without a file or without a verdict on the first line, stop the job and tell the
 user. Then:
 
-- All PASS: `job advance <id> approve`.
+- All PASS: `job advance <id> approve`. It refuses and names `needs-human` when the branch
+  moved after the gate, so the reviews read other code than would merge; do that.
 - Any CHANGES: `job advance <id> build`. It refuses and names `needs-human` when no
   rounds are left or the findings repeat last round's; do that. Otherwise resume
   `builder-<id>` with `SendMessage`:
