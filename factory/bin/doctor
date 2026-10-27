@@ -145,6 +145,7 @@ def check_repo(config):
         ok = json.loads(allowed.stdout).get({"merge": "merge", "squash": "squash", "rebase": "rebase"}[config["merge_method"]])
         report("ok" if ok else "FAIL", f"merge_method {config['merge_method']}",
                "" if ok else "the repo doesn't allow it")
+    check_protection(base)
     have = sh("gh", "label", "list", "--limit", "200", "--json", "name")
     if have.returncode == 0:
         names = {l["name"] for l in json.loads(have.stdout)}
@@ -161,6 +162,20 @@ def check_repo(config):
         if "*" in pattern and not any(fnmatch.fnmatch(str(p.relative_to(REPO)), pattern)
                                       for p in REPO.rglob("*") if ".git" not in p.parts and p.is_file()):
             report("warn", "protected_paths", f"{pattern} matches no file yet")
+
+
+def check_protection(base):
+    """Branch protection is what stops a push to the base branch that the policy hook's string check misses."""
+    classic = sh("gh", "api", f"repos/{{owner}}/{{repo}}/branches/{base}", "--jq", ".protected")
+    rules = sh("gh", "api", f"repos/{{owner}}/{{repo}}/rules/branches/{base}", "--jq", "[.[].type] | join(\" \")")
+    if classic.returncode != 0 and rules.returncode != 0:
+        report("warn", f"{base} protection", "couldn't read it from GitHub")
+    elif classic.stdout.strip() == "true" or rules.stdout.strip():
+        report("ok", f"{base} protection")
+    else:
+        report("warn", f"{base} protection", f"none: anything with your gh login can push to {base}. Add branch protection "
+               "or a ruleset that requires a pull request and blocks force pushes. Require no approvals, or every "
+               "auto-merge fails: the factory's PRs are yours, and GitHub doesn't let you approve your own.")
 
 
 def check_agents():
@@ -182,6 +197,9 @@ def check_agents():
             report("FAIL", f"{name}.md", f"unknown frontmatter keys {', '.join(sorted(extra))}; Claude Code ignores them silently")
         elif "name" not in keys or "model" not in keys:
             report("FAIL", f"{name}.md", "needs `name` and `model`")
+        elif re.search(r"^tools:.*\bBash\b", m.group(1), re.M) and "command: factory/bin/policy" not in m.group(1):
+            report("FAIL", f"{name}.md", "has a shell but no `PreToolUse` hook running factory/bin/policy, so nothing "
+                   "stops it merging or pushing outside factory/* (copy the hook from builder.md)")
     if failures == before:
         report("ok", "skill and agents")
     # Files that exist on disk but are ignored or untracked never reach origin, so job worktrees won't have them.

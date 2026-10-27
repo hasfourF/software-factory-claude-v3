@@ -1,7 +1,7 @@
 # Design
 
 How this factory works (v3, built on ZazenCodes' v2), and why it's built this way.
-The source is small enough to read in one sitting: one skill, ten agents, six
+The source is small enough to read in one sitting: one skill, ten agents, seven
 scripts and a config file.
 
 ## The idea
@@ -20,7 +20,7 @@ good. Each stage leaves a file behind, so you can see what happened and why.
 | Orchestrator | `.claude/skills/factory/SKILL.md` | The session that runs `/factory`. Starts jobs, spawns agents, calls the scripts. Writes nothing itself. |
 | Agents | `.claude/agents/*.md` | One file per role. Each reads files, writes exactly one file, and replies with one line. |
 | State | `factory/jobs/<job-id>/` | `job.json` plus every agent's file. Gitignored, local to the machine running the factory. |
-| Spine | `factory/bin/job`, `gate`, `route` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. |
+| Spine | `factory/bin/job`, `gate`, `route`, `policy` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. `policy` is the agents' hook that refuses merges and pushes outside `factory/*`. |
 | Tools | `factory/bin/doctor`, `metrics`, `feed` | `doctor` checks the setup, `metrics` reports how far to trust the factory, `feed` proposes issues. |
 | Knowledge | `factory/recipes/`, `factory/lessons.md` | The project's playbooks for common changes, and feedback from reviews, reworks and reverts. Agents read them; people approve them. |
 | Checks | `factory/checks.sh` | The repo's test, lint, typecheck and build commands. The only repo-specific script. |
@@ -142,6 +142,22 @@ comment and run `/factory rework <n>` to send your comments to the builder.
 **State is files, so runs resume.** Every fact the orchestrator needs is in
 `factory/jobs/`. If the session dies or compacts, a fresh `/factory run` reads
 the queue and resumes every job from its stage.
+
+**One session at a time.** Two sessions running `/factory run` would both resume
+the same jobs and put two builders on one branch. The first `job` command that
+changes anything records its Claude Code session and process in
+`factory/jobs/.run.json`, and `job` refuses changes from any other session while
+that process is alive. A crashed or closed session lets go by itself, because its
+process is gone, and the skill runs `job release` when a command finishes. Commands
+run by hand from a terminal aren't sessions and are never refused.
+
+**The agents can't merge or push to the base branch.** Every agent with a shell
+has a `PreToolUse` hook, `factory/bin/policy`, that refuses `gh pr merge`, a
+`gh api` call that writes, and any `git push` that doesn't name only `factory/*`
+branches. The factory's own merge runs inside `job merge`, out of the hook's sight.
+The hook reads command strings, so it stops mistakes, not an agent set on getting
+round it: branch protection on the base branch is the backstop, and `doctor`
+warns when there is none.
 
 **Cost is measured per job.** Claude Code writes each subagent's transcript,
 with model and token counts per message, to

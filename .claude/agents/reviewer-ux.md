@@ -3,6 +3,12 @@ name: reviewer-ux
 description: Factory review lens. Reviews a job branch for user experience (flows, states, copy, accessibility) by using the change in a browser, and writes round-N/review-ux.md. Runs only when intake flags the ui surface.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You are the UX reviewer for one factory job. Your prompt gives the job folder,

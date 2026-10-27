@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""PreToolUse hook on every factory agent with a shell: no merges, and no pushes outside factory/*.
+
+Usage:
+  policy            read a hook's JSON on stdin; exit 2 with the reason on stderr to block the command
+
+The agents share the operator's `gh` login, so only their prompts kept them from
+merging a PR or pushing to the base branch. This makes those promises hold for
+mistakes: `gh pr merge`, a `gh api` call that writes, and a `git push` that
+doesn't name only `factory/*` branches are refused before they run. The factory's
+own merge runs inside `factory/bin/job`, which no hook sees. A string check is not
+a sandbox: branch protection on the base branch is what stops a determined push.
+"""
+
+import json
+import re
+import shlex
+import sys
+
+BRANCHES = "factory/"
+# git options that take the next word as their value
+GIT_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+GH_VALUE = {"-R", "--repo", "--hostname"}
+SHELLS = {"sh", "bash", "zsh", "dash"}
+PUSH_VALUE = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+# pushes that reach past the named refs: every branch, every tag, or deleting what isn't local
+PUSH_WIDE = {"--all", "--branches", "--mirror", "--tags", "--follow-tags", "--prune"}
+PUSH_HELP = f"push a named branch instead: `git push -u origin {BRANCHES}<job-id>`"
+
+
+def program(word):
+    return word.rsplit("/", 1)[-1]
+
+
+def words(command):
+    """The command's words, with each `;`, `&&`, `|` or newline as a separator of its own."""
+    lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    return list(lex)
+
+
+def segments(command):
+    segment = []
+    for word in words(command):
+        if word and set(word) <= set(";&|()<>"):
+            yield segment
+            segment = []
+        else:
+            segment.append(word)
+    yield segment
+
+
+def check_push(args):
+    positional = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in PUSH_WIDE or a.split("=")[0] in PUSH_WIDE:
+            return f"`git push {a}` reaches branches or tags outside {BRANCHES}*; {PUSH_HELP}"
+        if a in PUSH_VALUE:
+            i += 1
+        elif not a.startswith("-"):
+            positional.append(a)
+        i += 1
+    refspecs = positional[1:]
+    if not refspecs:
+        return f"`git push` without a branch pushes whatever git is set to; {PUSH_HELP}"
+    for spec in refspecs:
+        dst = spec.lstrip("+").split(":")[-1].removeprefix("refs/heads/")
+        if not dst.startswith(BRANCHES):
+            return f"the factory pushes only {BRANCHES}* branches, and `{spec}` is `{dst}`; {PUSH_HELP}"
+    return None
+
+
+def check_git(args):
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in GIT_VALUE else 1
+    if i < len(args) and args[i] == "push":
+        return check_push(args[i + 1:])
+    return None
+
+
+def check_gh(args):
+    sub, i = [], 0
+    while i < len(args) and len(sub) < 2:
+        if args[i] in GH_VALUE:
+            i += 1
+        elif not args[i].startswith("-"):
+            sub.append(args[i])
+        i += 1
+    if sub == ["pr", "merge"]:
+        return "only `factory/bin/job merge` merges a factory PR, after the approver and the gate; write your verdict instead"
+    if sub[:1] == ["api"]:
+        method = next((args[i + 1] for i, a in enumerate(args[:-1]) if a in {"-X", "--method"}), None)
+        method = method or next((a.split("=", 1)[1] for a in args if a.startswith("--method=")), None)
+        fields = any(a in {"-f", "-F", "--field", "--raw-field", "--input"} or
+                     re.match(r"--(field|raw-field|input)=", a) for a in args)
+        graphql = "graphql" in args
+        writes = (method or ("POST" if fields else "GET")).upper() != "GET"
+        if graphql:
+            writes = any("mutation" in a for a in args)
+        if writes:
+            return "factory agents read GitHub with `gh api`, never write to it; the factory's scripts do the writing"
+    return None
+
+
+def verdict(command, depth=0):
+    """Why the command is refused, or None."""
+    try:
+        parts = list(segments(command))
+    except ValueError:  # unbalanced quotes: shlex can't read it, so look at the raw text
+        if re.search(r"\bgit\b.*\bpush\b|\bgh\b.*\b(pr\s+merge|api)\b", command, re.S):
+            return "this command's quoting can't be read, and it pushes or calls GitHub; run that part on its own"
+        return None
+    for segment in parts:
+        for i, word in enumerate(segment):
+            name, before = program(word), [program(w) for w in segment[max(i - 2, 0):i]]
+            # A shell's -c string and eval's words are commands too; a commit message is not.
+            inner = depth < 3 and (before[-1:] == ["eval"] or before == [*before[:1], "-c"] and before[0] in SHELLS)
+            why = (check_git(segment[i + 1:]) if name == "git" else
+                   check_gh(segment[i + 1:]) if name == "gh" else
+                   verdict(word, depth + 1) if inner else None)
+            if why:
+                return why
+    return None
+
+
+def main(argv):
+    if argv:
+        print(__doc__.strip())
+        sys.exit(0 if argv[0] in {"-h", "--help"} else 2)
+    try:
+        event = json.load(sys.stdin)
+    except ValueError:
+        print("factory policy: the hook input isn't JSON, so the command can't be checked", file=sys.stderr)
+        sys.exit(2)
+    if event.get("tool_name") != "Bash":
+        return
+    why = verdict((event.get("tool_input") or {}).get("command") or "")
+    if why:
+        print(f"factory policy: {why}.", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

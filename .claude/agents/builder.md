@@ -4,6 +4,11 @@ description: Factory step 2. Implements a job's spec on its factory/<job-id> bra
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
 hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
   SubagentStop:
     - hooks:
         - type: command

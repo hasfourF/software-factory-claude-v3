@@ -489,3 +489,77 @@ class Feeders(Quiet, unittest.TestCase):
                 shutil.rmtree(p)
 
 
+
+class OneSession(Quiet, unittest.TestCase):
+    """Only one Claude Code session drives the factory; a closed one lets go by itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.live = {101, 202}
+        patcher = mock.patch.object(job, "alive", lambda pid: pid in self.live)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def session(self, pid, sid):
+        return mock.patch.dict("os.environ", {"CLAUDE_PID": str(pid), "CLAUDE_CODE_SESSION_ID": sid})
+
+    def holder(self):
+        path = job.JOBS / ".run.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_the_first_session_takes_it_and_a_second_live_one_is_refused(self):
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        self.assertEqual((101, "aaaaaaaa-1"), (self.holder()["pid"], self.holder()["session"]))
+        with self.session(202, "bbbbbbbb-2"), self.assertRaisesRegex(job.Refused, "pid 101, session aaaaaaaa"):
+            job.claim_run()
+        self.assertEqual(101, self.holder()["pid"])
+
+    def test_a_closed_session_lets_go(self):
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        self.live.discard(101)
+        with self.session(202, "bbbbbbbb-2"):
+            job.claim_run()
+        self.assertEqual(202, self.holder()["pid"])
+
+    def test_the_same_process_keeps_it_after_clear(self):
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        with self.session(101, "cccccccc-3"):
+            job.claim_run()
+        self.assertEqual("cccccccc-3", self.holder()["session"])
+
+    def test_outside_claude_code_nothing_is_taken_or_refused(self):
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            job.claim_run()
+        self.assertEqual(101, self.holder()["pid"])
+
+    def test_release(self):
+        out = io.StringIO()
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        with self.session(202, "bbbbbbbb-2"):
+            with self.assertRaisesRegex(job.Refused, "still running"):
+                job.cmd_release(force=False)
+            with contextlib.redirect_stdout(out):
+                job.cmd_release(force=True)
+            job.claim_run()
+        self.assertEqual(202, self.holder()["pid"])
+        with self.session(202, "bbbbbbbb-2"), contextlib.redirect_stdout(out):
+            job.cmd_release(force=False)
+        self.assertIsNone(self.holder())
+
+    def test_commands_that_change_jobs_are_refused_and_read_only_ones_are_not(self):
+        with self.session(101, "aaaaaaaa-1"):
+            job.claim_run()
+        j = self.make(stage="build", round=1)
+        job.save(j)
+        with self.session(202, "bbbbbbbb-2"):
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                job.main(["sync", "001-x"])
+            self.assertIn("another Claude Code session", err.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()):
+                job.main(["recipes"])

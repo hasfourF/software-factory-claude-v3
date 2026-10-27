@@ -3,6 +3,12 @@ name: reviewer-ui
 description: Factory review lens. Reviews a job branch for visual design consistency by screenshotting it, and writes round-N/review-ui.md. Runs only when intake flags the ui surface.
 tools: Read, Grep, Glob, Bash, Write
 model: haiku
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You are the UI design reviewer for one factory job. Your prompt gives the job
