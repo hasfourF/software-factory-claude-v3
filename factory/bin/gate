@@ -16,8 +16,9 @@ so a branch can't change the checks it is judged by. It fails when:
   - the branch adds a line that looks like a secret (`gate.scan_secrets`);
   - an acceptance command in the spec's `## Verification` fails (see below);
   - `factory/verify.sh`, if the project has one, exits non-zero;
-  - the worktree has uncommitted changes, or the checks change a tracked file or
-    move HEAD: the evidence must be about the commit that gets pushed;
+  - the worktree has uncommitted changes, or the checks change or create a file
+    .gitignore doesn't cover, or move HEAD: the evidence must be about the commit
+    that gets pushed, and `job` refuses to approve a worktree that isn't it;
   - checks.sh runs longer than `gate.checks_timeout` seconds (it and everything it
     started are killed, so a hung test can't hold the merge lock).
 
@@ -296,9 +297,9 @@ def run_checks(worktree, retries=0):
     return code, logs[-1], int(time.monotonic() - start), len(logs) - 1
 
 
-def dirty(worktree, untracked=True):
-    """Paths `git status` reports: uncommitted edits (and, with untracked, new files .gitignore doesn't cover)."""
-    out = git(worktree, "status", "--porcelain", f"--untracked-files={'normal' if untracked else 'no'}")
+def dirty(worktree):
+    """Paths `git status` reports: uncommitted edits and new files .gitignore doesn't cover."""
+    out = git(worktree, "status", "--porcelain")
     return [line[3:] for line in out.splitlines() if line]
 
 
@@ -354,8 +355,10 @@ def gate(job_id, merge):
     after = git(worktree, "rev-parse", "HEAD").strip()
     if after != commit:
         unclean.append(f"HEAD moved from {commit[:7]} to {after[:7]} while the checks ran")
-    elif not before and (changed := dirty(worktree, untracked=False)):
-        unclean.append(f"the checks changed tracked files: {', '.join(changed)}")
+    elif not before and (changed := dirty(worktree)):
+        # Approval refuses the same files, so fail now, before any reviewer runs.
+        unclean.append(f"the checks changed or created files: {', '.join(changed)}. Put generated output in "
+                       ".gitignore, delete it at the end of checks.sh, or write it outside the worktree")
     verdict = ("PASS" if code == 0 and not protected and not secrets and acceptance_ok and script_ok and not unclean
                else "FAIL")
 
