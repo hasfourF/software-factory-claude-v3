@@ -66,7 +66,9 @@ CHANGES.
 - **Simplicity**: it is the smallest change that fully meets the spec, with no
   speculative options, fallbacks, hidden defaults or swallowed errors.
 - **Reuse**: it uses existing helpers, components and patterns instead of
-  duplicating them.
+  duplicating them, and follows the examples `AGENTS.md` names under
+  `## Rules for agents`.
+- **Project rules**: nothing breaks a rule under `### Never` there. Name the rule.
 - **Conventions**: the repo's style as `AGENTS.md` and the neighbouring code show
   it, and comment density like the neighbouring code.
 - **Docs**: `AGENTS.md` and any docs it lists are updated where the change

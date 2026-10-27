@@ -66,7 +66,10 @@ ESCALATE if any of them fails, or if the change:
   as pricing, public copy about the business, or what is free versus paid;
 - carries a human's plan feedback that the build did not visibly follow.
 
-Add to this list what `AGENTS.md` says a human must always see in this project.
+Add to this list everything under `### Needs a human` in `AGENTS.md`'s
+`## Rules for agents`, and anything else it says a human must always see. A change
+that breaks one of its `### Never` rules is not yours to approve either: ESCALATE
+and name the rule.
 
 ## Write decision.md
 
