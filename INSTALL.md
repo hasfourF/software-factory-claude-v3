@@ -62,6 +62,7 @@ factory/bin/route
 factory/bin/doctor
 factory/bin/metrics
 factory/bin/feed
+factory/bin/policy
 factory/dashboard.html
 ```
 
@@ -70,7 +71,7 @@ SRC=repos/hasfourF/software-factory-claude-v3/contents
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && gh api -H "Accept: application/vnd.github.raw" "$SRC/$f" > "$f"
 done
-chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor factory/bin/metrics factory/bin/feed
+chmod +x factory/checks.sh factory/setup.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/doctor factory/bin/metrics factory/bin/feed factory/bin/policy
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `CHANGELOG.md`, `LICENSE`,
@@ -151,8 +152,8 @@ tests; it must start and stop anything it starts. Skip it otherwise.
   and `prices_usd_per_mtok` as they are unless the user asks.
 
 **Agents.** The checklists are general on purpose. Tailor them to the stack
-without changing their structure, file names, first-line formats or one-line
-replies:
+without changing their structure, file names, first-line formats, one-line
+replies or `hooks:` frontmatter:
 
 - `reviewer-security.md`: this project's hot spots (its auth, its data access
   rules, its payment and webhook code, where user input meets queries or HTML).

@@ -14,6 +14,14 @@ what it says and do that. Don't work around it.
 
 Read `factory/config.json` now for `concurrency`, `max_rounds` and `ports`.
 
+Only one session runs the factory. If a `factory/bin/job` command refuses because
+another Claude Code session has it, show the user that message and stop; don't
+run `job release --force` unless they ask. When the command you were given is
+finished, run `factory/bin/job release` so another session can run it.
+
+A factory agent that reports `factory policy: …` was refused a merge or a push
+outside `factory/*`. That is the policy working; don't route around it.
+
 ## The pipeline
 
 ```

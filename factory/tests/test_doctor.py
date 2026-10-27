@@ -335,5 +335,54 @@ class Layout(Project):
         self.assertEqual([], self.lines)
 
 
+
+class PolicyHook(Project):
+    HOOK = "hooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: factory/bin/policy\n"
+
+    def agents(self, builder_front):
+        for a in doctor.AGENTS:
+            front = builder_front if a == "builder" else f"name: {a}\nmodel: opus\ntools: Read, Write\n"
+            self.put(self.repo, f".claude/agents/{a}.md", f"---\n{front}---\nx\n")
+        self.put(self.repo, ".claude/skills/factory/SKILL.md", "x")
+
+    def test_an_agent_with_a_shell_needs_the_hook(self):
+        self.agents("name: builder\nmodel: sonnet\ntools: Read, Bash\n")
+        with mock.patch.object(doctor, "sh", lambda *a, **k: mock.Mock(returncode=0, stdout="x")):
+            doctor.check_agents()
+        self.assertEqual(["FAIL"], self.levels("builder.md"))
+
+    def test_with_the_hook_it_is_fine(self):
+        self.agents("name: builder\nmodel: sonnet\ntools: Read, Bash\n" + self.HOOK)
+        with mock.patch.object(doctor, "sh", lambda *a, **k: mock.Mock(returncode=0, stdout="x")):
+            doctor.check_agents()
+        self.assertEqual([], self.levels("builder.md"))
+        self.assertEqual(["ok"], self.levels("skill and agents"))
+
+
+class Protection(Project):
+    def check(self, classic, rules):
+        answers = {"branches": classic, "rules": rules}
+
+        def sh(*cmd, cwd=None):
+            code, out = answers["rules" if "/rules/" in cmd[2] else "branches"]
+            return mock.Mock(returncode=code, stdout=out)
+
+        with mock.patch.object(doctor, "sh", sh):
+            doctor.check_protection("main")
+        return self.lines[-1][0]
+
+    def test_unprotected_warns(self):
+        self.assertEqual("warn", self.check((0, "false\n"), (0, "\n")))
+        self.assertIn("no approvals", self.lines[-1][2])
+
+    def test_branch_protection_or_a_ruleset_is_enough(self):
+        self.assertEqual("ok", self.check((0, "true\n"), (0, "\n")))
+        self.assertEqual("ok", self.check((0, "false\n"), (0, "pull_request non_fast_forward\n")))
+
+    def test_unreadable_warns_without_claiming_either_way(self):
+        self.assertEqual("warn", self.check((1, ""), (1, "")))
+        self.assertIn("couldn't read", self.lines[-1][2])
+
+
 if __name__ == "__main__":
     unittest.main()

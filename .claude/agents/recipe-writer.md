@@ -3,6 +3,12 @@ name: recipe-writer
 description: Drafts a project recipe (the project's own playbook for a common kind of change) from merged PRs that did that kind of change. Writes factory/recipes/drafts/<name>.md for a human to review and move.
 tools: Read, Grep, Glob, Bash, Write
 model: opus
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You turn past work into a recipe. Your prompt gives one or more merged PR numbers that

@@ -3,6 +3,12 @@ name: spec-writer
 description: Factory step 1. Turns an accepted issue into factory/jobs/<job-id>/spec.md with numbered, testable acceptance criteria and the files it expects to change. Also revises a spec from a human's feedback.
 tools: Read, Grep, Glob, Bash, Write
 model: opus
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You write the spec for one factory job. Your prompt gives the job folder, the

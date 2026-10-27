@@ -28,8 +28,13 @@ Usage:
   job replay-create <pr>         rebuild a merged PR's issue from a snapshot of the code before it, offline
   job replay-finish <job>        compare what the factory built with what shipped (replay.md)
   job replay-clean <job>         delete a replay's snapshot and its answer key
+  job release [--force]          let another Claude Code session run the factory (--force: even while this one is alive)
 
 <job> is a job id (004-dark-mode) or an issue number (12).
+
+One Claude Code session runs the factory at a time. The first command that changes
+anything takes factory/jobs/.run.json for its session; any other live session is
+refused until that one exits or runs `job release`.
 """
 
 import contextlib
@@ -148,10 +153,7 @@ def load(job_id):
 
 
 def save(job):
-    path = job_dir(job["id"]) / "job.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(job, indent=2) + "\n")
-    tmp.replace(path)
+    write_json(job_dir(job["id"]) / "job.json", job)
 
 
 @contextlib.contextmanager
@@ -161,6 +163,75 @@ def merge_lock():
     with open(JOBS / ".merge.lock", "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         yield
+
+
+# Commands that change nothing, so any session may run them.
+READ_ONLY = {"queue", "summary", "plan-needed", "overlap", "stale", "recipes", "replay-list", "release"}
+
+
+def this_session():
+    """The Claude Code process running this command, or None outside Claude Code."""
+    sid, pid = os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("CLAUDE_PID", "")
+    return {"session": sid, "pid": int(pid)} if sid and pid.isdigit() else None
+
+
+def alive(pid):
+    res = subprocess.run(["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True)
+    return "claude" in res.stdout.lower()
+
+
+@contextlib.contextmanager
+def run_lease():
+    """(holder, me) under a lock: who has .run.json, and this session."""
+    JOBS.mkdir(parents=True, exist_ok=True)
+    with open(JOBS / ".run.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        path = JOBS / ".run.json"
+        try:
+            holder = json.loads(path.read_text())
+        except (OSError, ValueError):
+            holder = None
+        yield holder, this_session()
+
+
+def other_live(holder, me):
+    return holder and holder.get("pid") != (me or {}).get("pid") and alive(holder.get("pid", 0))
+
+
+def claim_run():
+    """Take the factory for this session, or refuse while another live session has it.
+
+    Two sessions running `/factory run` would both resume the same jobs and spawn two
+    builders on one branch. The holder is its Claude Code process: a session that
+    crashed or exited lets go by itself, and one that ran `/clear` keeps it.
+    """
+    with run_lease() as (holder, me):
+        if not me:
+            return  # run by hand from a terminal: that is the operator, not another orchestrator
+        if other_live(holder, me):
+            raise Refused(f"another Claude Code session (pid {holder['pid']}, session {holder['session'][:8]}) has run "
+                          f"the factory since {holder['since']}. Let it finish or close it. If it's idle, "
+                          "`factory/bin/job release --force` hands the factory to this session")
+        if not holder or (holder.get("pid"), holder.get("session")) != (me["pid"], me["session"]):
+            write_json(JOBS / ".run.json", {**me, "since": now()})
+
+
+def cmd_release(force):
+    with run_lease() as (holder, me):
+        if not holder:
+            print("no session has the factory")
+            return
+        if other_live(holder, me) and not force:
+            raise Refused(f"session {holder['session'][:8]} (pid {holder['pid']}) has the factory and is still running; "
+                          "--force takes it from that session")
+        (JOBS / ".run.json").unlink()
+        print(f"released the factory from session {holder['session'][:8]}")
+
+
+def write_json(path, data):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
 
 
 def all_jobs():
@@ -1386,6 +1457,8 @@ def main(argv):
         return
     cmd, args = argv[0], argv[1:]
     try:
+        if cmd not in READ_ONLY:
+            claim_run()
         if cmd == "queue" and not args:
             cmd_queue()
         elif cmd == "create" and len(args) == 1 and args[0].isdigit():
@@ -1433,6 +1506,8 @@ def main(argv):
             cmd_replay_finish(load(args[0]))
         elif cmd == "replay-clean" and len(args) == 1:
             cmd_replay_clean(load(args[0]))
+        elif cmd == "release" and args in ([], ["--force"]):
+            cmd_release(bool(args))
         else:
             die(f"bad arguments: {' '.join(argv)}\n\n{__doc__.strip()}")
     except Refused as e:

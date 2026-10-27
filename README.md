@@ -103,6 +103,7 @@ These are plain scripts; run them from the project root. `python3` 3.10+ and `gh
 | `factory/bin/job learn [<job>]` | The same as `/factory learn`. |
 | `factory/bin/job backlog` | Turn the first unchecked `factory/backlog.md` line into a labeled issue. |
 | `factory/bin/job replay-list`, `replay-clean <job>` | The same as `/factory replay list` and `replay clean`. |
+| `factory/bin/job release [--force]` | Let another Claude Code session run the factory. Only one session runs it at a time, and a closed one lets go by itself; `--force` takes it from a session that is still open. |
 | `python3 -m unittest discover -s factory/tests` | The test suite. |
 
 `job` is the only writer of job state, and it refuses moves the job's files don't
@@ -335,6 +336,7 @@ factory/
   bin/doctor                  is this project ready to run the factory?
   bin/metrics                 auto-merge rate, cost, reverts; which areas have earned trust
   bin/feed                    files issues for failing CI, advisories, TODO(factory) comments, custom sources
+  bin/policy                  the agents' hook: no merges, no pushes outside factory/*
   setup.sh                    prepares a fresh worktree (the installer fills it in)
   lessons.md                  feedback from your reworks, reviews and reverts, read by builders and reviewers
   lessons.proposed.md         the curator's tidy version, until you adopt it
@@ -408,7 +410,11 @@ carry that run's paths and URLs.
 - Only the user running the factory can approve a plan by comment; the issue's
   author can comment feedback, not approve.
 - The factory pushes only `factory/*` branches, merges only through
-  `gh pr merge`, and never deploys.
+  `gh pr merge`, and never deploys. A hook on every agent with a shell refuses
+  merges and other pushes. It reads command strings, so protect your base branch
+  too (require a pull request, but no approvals); `doctor` warns when it isn't.
+- One Claude Code session runs the factory at a time; another is refused until
+  it closes.
 
 ## License
 

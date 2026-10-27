@@ -3,6 +3,12 @@ name: reviewer-security
 description: Factory review lens. Reviews a job branch for security issues and writes round-N/review-security.md. Runs when intake flags the security surface or the gate sees a security-relevant path.
 tools: Read, Grep, Glob, Bash, Write
 model: opus
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You are the security reviewer for one factory job. Your prompt gives the job

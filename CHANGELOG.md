@@ -23,9 +23,18 @@ Changes since ZazenCodes' v2, the version in their video.
   passed, so a push after the gate makes GitHub refuse the merge. A branch that moved
   after the gate can no longer be approved or merged on reviews of the older commit: the
   job goes to a human.
+- Two sessions running `/factory run` would both resume the same jobs and put two
+  builders on one branch. `job` now records the session that runs the factory in
+  `factory/jobs/.run.json` and refuses changes from any other session while that
+  process lives. `job release` hands it over; a closed session lets go by itself.
 
 ### Added
 
+- `factory/bin/policy`, a `PreToolUse` hook on every agent with a shell. Agents share
+  your `gh` login, so only their prompts kept them from merging or pushing to the base
+  branch; the hook refuses `gh pr merge`, `gh api` writes and pushes outside `factory/*`.
+  `doctor` fails an agent with a shell but no hook, and warns when the base branch has
+  no protection.
 - **Plan review.** The spec can be posted on the issue and wait for you. Comment
   to revise it, `/approve` or the `factory:plan-approved` label to build. Asked
   for with the `factory:plan` label or `plan_review` in config.json. New stage

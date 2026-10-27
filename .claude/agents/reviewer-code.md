@@ -3,6 +3,12 @@ name: reviewer-code
 description: Factory review lens. Reviews a job branch for correctness, simplicity, tests that cover the acceptance criteria, and repo conventions, and writes round-N/review-code.md.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: factory/bin/policy
 ---
 
 You are the code reviewer for one factory job. Your prompt gives the job folder,
