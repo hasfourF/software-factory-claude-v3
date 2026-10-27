@@ -254,7 +254,9 @@ class MergeSafety(Quiet, unittest.TestCase):
         """A job whose branch is pushed to a real origin and whose round-1 gate passed on its HEAD."""
         tmp, repo = make_repo({"a.txt": "a"})
         self.addCleanup(tmp.cleanup)
-        origin = Path(tmp.name) / "origin.git"
+        remote = tempfile.TemporaryDirectory()
+        self.addCleanup(remote.cleanup)
+        origin = Path(remote.name) / "origin.git"
         git(repo, "init", "-q", "--bare", str(origin))
         git(repo, "remote", "add", "origin", str(origin))
         git(repo, "checkout", "-q", "-b", "factory/001-x")
@@ -280,6 +282,13 @@ class MergeSafety(Quiet, unittest.TestCase):
             job.advance(j, "build")
         self.assertEqual("needs-human", job.advance(j, "needs-human")["stage"])
         self.assertIn("moved after the gate", (self.dir(j) / "decision.md").read_text())
+
+    def test_an_uncommitted_edit_after_the_gate_cannot_approve(self):
+        j, repo, _ = self.gated("review")
+        (repo / "a.txt").write_text("fixed, but never committed")
+        with self.assertRaisesRegex(job.Refused, "uncommitted changes since the gate checked .*a.txt"):
+            job.advance(j, "approve")
+        self.assertEqual("needs-human", job.advance(j, "needs-human")["stage"])
 
     def merge(self, j, merged_state="OPEN"):
         calls = []
@@ -459,8 +468,6 @@ if __name__ == "__main__":
 class Feeders(Quiet, unittest.TestCase):
     def queue(self, queued, proposed):
         def fake(*args):
-            if "closed" in args:
-                return []
             return {"factory": queued, "factory:proposed": proposed}[args[args.index("--label") + 1]]
 
         out = io.StringIO()
@@ -470,6 +477,29 @@ class Feeders(Quiet, unittest.TestCase):
 
     def issue(self, n, title, *labels, body=""):
         return {"number": n, "title": title, "body": body, "labels": [{"name": l} for l in labels]}
+
+    def test_a_dependency_is_done_when_its_job_merged_or_it_was_closed_as_completed(self):
+        states = {12: ("CLOSED", "NOT_PLANNED"), 13: ("CLOSED", "COMPLETED"), 14: ("OPEN", None)}
+
+        def fake(*args):
+            if args[:2] == ("issue", "view"):
+                n = int(args[2])
+                if n not in states:
+                    raise job.Refused("no such issue")
+                return {"state": states[n][0], "stateReason": states[n][1]}
+            return {"factory": [self.issue(n, f"needs {d}", "factory", body=f"depends-on: #{d}")
+                                for n, d in ((20, 12), (21, 13), (22, 14), (23, 15), (24, 16))],
+                    "factory:proposed": []}[args[args.index("--label") + 1]]
+
+        done = self.make(id="001-done", issue=16, stage="merged")
+        job.save(done)
+        out = io.StringIO()
+        with mock.patch.object(job, "gh_json", fake), mock.patch.object(job, "pr_state", lambda j: "MERGED"), \
+                contextlib.redirect_stdout(out):
+            job.cmd_queue()
+        rows = {int(r.split("\t")[1]): r.split("\t")[0] for r in out.getvalue().splitlines()}
+        self.assertEqual({20: "wait", 21: "new", 22: "wait", 23: "wait", 24: "new"},
+                         {n: a for n, a in rows.items() if n >= 20})
 
     def test_a_proposed_issue_waits_for_you_and_is_never_built(self):
         rows = self.queue([self.issue(1, "Real one", "factory")],
@@ -619,6 +649,18 @@ class Deferred(Quiet, unittest.TestCase):
             job.advance(j, "merged")
         self.assertEqual(1, len(self.created()))
         self.assertEqual(42, j["deferred_issue"])
+
+    def test_a_merge_by_hand_on_github_files_it_too(self):
+        j = self.rescoped()
+        j["stage"] = "needs-human"
+        job.save(j)
+        with mock.patch.object(job, "pr_state", lambda j: "MERGED"), \
+                mock.patch.object(job, "remove_worktree", lambda j, delete_branch: None), \
+                mock.patch.object(job, "cost", lambda j: (0.0, {})):
+            j = job.reconcile(j)
+        self.assertEqual("merged", j["stage"])
+        self.assertEqual(1, len(self.created()))
+        self.assertEqual(42, json.loads((self.dir(j) / "job.json").read_text())["deferred_issue"])
 
     def test_filing_twice_or_after_a_crash_finds_the_first_issue(self):
         j = self.rescoped()

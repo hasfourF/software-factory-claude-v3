@@ -15,7 +15,11 @@ so a branch can't change the checks it is judged by. It fails when:
     (fnmatch patterns, where `*` also matches `/`; adding new files is fine);
   - the branch adds a line that looks like a secret (`gate.scan_secrets`);
   - an acceptance command in the spec's `## Verification` fails (see below);
-  - `factory/verify.sh`, if the project has one, exits non-zero.
+  - `factory/verify.sh`, if the project has one, exits non-zero;
+  - the worktree has uncommitted changes, or the checks change a tracked file or
+    move HEAD: the evidence must be about the commit that gets pushed;
+  - checks.sh runs longer than `gate.checks_timeout` seconds (it and everything it
+    started are killed, so a hung test can't hold the merge lock).
 
 When checks.sh fails, the gate runs it once more on the commit the branch started
 from, in a scratch checkout, and writes `BASE: red <commit>` or `BASE: green <commit>`
@@ -53,6 +57,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -262,16 +267,39 @@ def owned(paths, rules):
     return hits
 
 
+TIMED_OUT = 124  # what `timeout` exits with
+
+
+def run_once(worktree, timeout):
+    """(exit code, output) of one checks.sh run, killing its whole process group if it runs over."""
+    proc = subprocess.Popen(["bash", str(CHECKS)], cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        return TIMED_OUT, f"{out}\n[gate] checks.sh ran over gate.checks_timeout ({timeout}s) and was killed\n"
+
+
 def run_checks(worktree, retries=0):
     """(exit code, log, seconds, attempts that failed before the last one)."""
+    timeout = CONFIG.get("gate", {}).get("checks_timeout") or None
     start = time.monotonic()
     logs = []
     for attempt in range(retries + 1):
-        res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True)
-        logs.append(res.stdout + res.stderr)
-        if res.returncode == 0:
+        code, out = run_once(worktree, timeout)
+        logs.append(out)
+        if code == 0:
             break
-    return res.returncode, logs[-1], int(time.monotonic() - start), len(logs) - 1
+    return code, logs[-1], int(time.monotonic() - start), len(logs) - 1
+
+
+def dirty(worktree, untracked=True):
+    """Paths `git status` reports: uncommitted edits (and, with untracked, new files .gitignore doesn't cover)."""
+    out = git(worktree, "status", "--porcelain", f"--untracked-files={'normal' if untracked else 'no'}")
+    return [line[3:] for line in out.splitlines() if line]
 
 
 def base_checks(worktree, retries):
@@ -307,6 +335,7 @@ def gate(job_id, merge):
     round_dir = job_dir / f"round-{job['round']}"
     settings = CONFIG.get("gate", {})
     commit = git(worktree, "rev-parse", "HEAD").strip()
+    before = dirty(worktree)
     protected = protected_changes(worktree)
     secrets = find_secrets(worktree) if settings.get("scan_secrets", True) else []
     code, log, seconds, failed_first = run_checks(worktree, settings.get("retries", 0))
@@ -320,7 +349,15 @@ def gate(job_id, merge):
     ran_script, script_ok, script_out = ((run_verify_script(worktree, job_id, settings.get("verify_script_timeout", 300)))
                                          if code == 0 else (False, True, ""))
     acceptance_ok = all(status in {"pass", "skipped"} for _, _, status, _ in acceptance)
-    verdict = ("PASS" if code == 0 and not protected and not secrets and acceptance_ok and script_ok else "FAIL")
+    # What passed must be the commit that gets pushed: nothing uncommitted before, nothing changed by the checks.
+    unclean = [f"uncommitted before the checks ran: {', '.join(before)}"] if before else []
+    after = git(worktree, "rev-parse", "HEAD").strip()
+    if after != commit:
+        unclean.append(f"HEAD moved from {commit[:7]} to {after[:7]} while the checks ran")
+    elif not before and (changed := dirty(worktree, untracked=False)):
+        unclean.append(f"the checks changed tracked files: {', '.join(changed)}")
+    verdict = ("PASS" if code == 0 and not protected and not secrets and acceptance_ok and script_ok and not unclean
+               else "FAIL")
 
     files = changes(worktree)
     paths = [new for _, new, _ in files]
@@ -355,6 +392,8 @@ def gate(job_id, merge):
         + (f"BASE: {base[0]} {base[1]}\n" if base else "") + "\n"
         "## Protected paths\n"
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
+        + ("\n\n## Worktree\nThe gate tests the commit, so it fails when the worktree isn't that commit:\n"
+           + "\n".join(f"- {u}" for u in unclean) if unclean else "")
         + "\n\n## Secrets\n"
         + ("\n".join(f"- {s}" for s in secrets) if secrets else "None found in added lines.")
         + f"\n\n## Size\n{size} lines changed in {len(paths)} files"
@@ -374,13 +413,15 @@ def gate(job_id, merge):
             "green": f"\n\n## Base branch\nchecks.sh passes on {base[1][:7]}, where this branch started, so the "
                      "branch caused this failure.",
             "unknown": f"\n\n## Base branch\nCouldn't run checks.sh on {base[1][:7]} to compare."}[base[0]] if base else "")
-        + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
+        + f"\n\n## checks.sh\nExit {code} in {seconds}s{' (timed out)' if code == TIMED_OUT else ''}. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     notes = [f"protected paths changed: {', '.join(protected)}"] if protected else []
     notes += [f"{len(secrets)} possible secret(s)"] if secrets else []
     notes += [f"{sum(1 for r in acceptance if r[2] in {'fail', 'timeout'})} acceptance command(s) failed"] \
         if not acceptance_ok else []
     notes += ["verify.sh failed"] if not script_ok else []
+    notes += ["worktree isn't the commit"] if unclean else []
+    notes += ["checks.sh timed out"] if code == TIMED_OUT else []
     notes += [f"fails on {CONFIG['base_branch']} too"] if base and base[0] == "red" else []
     notes += ["flaky: passed on retry"] if flaky else []
     notes += [f"flags: {', '.join(flags)}"] if flags else []

@@ -510,7 +510,13 @@ def moved_since_gate(job):
     """Why the branch is no longer the commit the gate passed (and the reviews read), or None."""
     gated = header(round_dir(job) / "checks.md").get("COMMIT", "")
     head = git(job, "rev-parse", "HEAD").stdout.strip()
-    return None if head == gated else f"{job['branch']} moved after the gate: it checked {gated[:7]}, HEAD is {head[:7]}"
+    if head != gated:
+        return f"{job['branch']} moved after the gate: it checked {gated[:7]}, HEAD is {head[:7]}"
+    dirty = git(job, "status", "--porcelain").stdout.split("\n")
+    if any(dirty):
+        return (f"{job['branch']} has uncommitted changes since the gate checked {gated[:7]}: "
+                + ", ".join(l[3:] for l in dirty if l)[:200])
+    return None
 
 
 def pr_state(job):
@@ -926,6 +932,8 @@ def reconcile(job):
     if state in {"MERGED", "CLOSED"}:
         job = sync(job)
         merged = state == "MERGED"
+        if merged:
+            file_deferred(job)
         remove_worktree(job, delete_branch=merged)
         job["stage"] = "merged" if merged else "abandoned"
         job["stage_since"], job["ended"] = now(), now()
@@ -934,14 +942,29 @@ def reconcile(job):
     return job
 
 
+def delivered(number, jobs, done):
+    """Has a `depends-on` prerequisite been done? Its factory job merged, or it was closed as completed.
+
+    Closed alone isn't enough: an issue closed as not planned or a duplicate delivered nothing. Closing it as
+    completed is also how a human says the work was done another way.
+    """
+    if jobs.get(number) and jobs[number]["stage"] == "merged":
+        return True
+    if number not in done:
+        try:
+            issue = gh_json("issue", "view", str(number), "--json", "state,stateReason")
+        except Refused:  # no such issue: keep waiting, and the row names it
+            issue = {}
+        done[number] = issue.get("state") == "CLOSED" and issue.get("stateReason") == "COMPLETED"
+    return done[number]
+
+
 def cmd_queue():
     jobs = {j["issue"]: reconcile(j) for j in all_jobs() if not is_replay(j)}
     rows = []
     issues = gh_json("issue", "list", "--label", LABELS["queue"], "--state", "open",
                      "--limit", "200", "--json", "number,title,body,labels")
-    closed = {i["number"] for i in gh_json("issue", "list", "--state", "closed", "--limit", "200",
-                                           "--json", "number")}
-    open_numbers = set()
+    open_numbers, done = set(), {}
     for issue in issues:
         n = issue["number"]
         open_numbers.add(n)
@@ -949,8 +972,7 @@ def cmd_queue():
         rank = j["priority"] if j and "priority" in j else priority_of(l["name"] for l in issue["labels"])
         tag = f"[p{rank}] " if rank < 9 else ""
         if not j:
-            waiting = [d for d in depends_on(issue["body"])
-                       if not (jobs.get(d) and jobs[d]["stage"] == "merged") and d not in closed]
+            waiting = [d for d in depends_on(issue["body"]) if not delivered(d, jobs, done)]
             if waiting:
                 rows.append((rank, "wait", n, "-", "-", f"{tag}waiting for " + ", ".join(f"#{d}" for d in waiting)))
             else:

@@ -138,9 +138,10 @@ Everything is in `factory/config.json`. The ones you'll touch:
 | `routing`, `surface_reviewers` | see file | Builder and reviewer models by risk, and the extra reviewers for `ui` and `security`. |
 | `auto_merge.risks`, `auto_merge.areas` | all risks, `null` | The autonomy dial. A change outside them always waits for you. `metrics` suggests `areas`. |
 | `gate.retries` | `1` | Re-runs of a failing `checks.sh`; a pass on a retry is reported as flaky. |
+| `gate.checks_timeout` | `1800` | Seconds `checks.sh` may run before it and everything it started are killed, and the gate fails. |
 | `gate.verify_allow` | `[]` | Command prefixes the gate may run from a spec's `## Verification`. Empty means none run. |
 | `gate.max_diff_lines` | `800` | A bigger diff always goes to a human. |
-| `gate.respect_codeowners` | `true` | A path with a `CODEOWNERS` owner always goes to a human. |
+| `gate.respect_codeowners` | `true` | A path with a `CODEOWNERS` owner always goes to a human (other than a catch-all `*` rule, which would send every change to a human). |
 | `protected_paths` | the factory and `.github/workflows/*` | Existing files a branch must not modify. Add your tests. |
 | `force_security_paths`, `always_escalate_paths` | see file | A diff touching the first gets the security review; one touching the second always goes to a human. |
 | `limits` | `$5` a job, `$25` a run, `90` min | Cost caps (API-equivalent) and the stage timeout. |
@@ -246,7 +247,9 @@ The gate is only as good as what it runs, so there are three ways to make it str
   it, end-to-end or visual-regression tests, coverage of changed lines. It runs after
   `checks.sh` passes, with `$FACTORY_PORT` set.
 - **`CODEOWNERS`.** A change to a path that has an owner always waits for a human
-  (the rules are read from the base branch, so a branch can't edit its way out).
+  (the rules are read from the base branch, so a branch can't edit its way out). A
+  catch-all `* @team` line doesn't count, or nothing could ever auto-merge; to send
+  everything to a human, set `auto_merge.risks` to `[]`.
 
 ## Know how far to trust it
 
@@ -291,7 +294,9 @@ Small samples mislead. Treat the numbers as a prompt to read the PRs.
 ## Priorities and order
 
 `factory:p0`, `factory:p1` and `factory:p2` labels set the order (p0 first). Put
-`depends-on: #12` on a line of an issue to hold it until #12 has merged. Two jobs
+`depends-on: #12` on a line of an issue to hold it until #12's factory job has
+merged, or #12 is closed as completed (close it that way yourself if the work was
+done another way; closed as not planned doesn't count). Two jobs
 whose specs plan to touch the same files don't build at the same time.
 
 ## What stops a runaway
@@ -302,11 +307,14 @@ whose specs plan to touch the same files don't build at the same time.
   over its cap is escalated; a run over its cap starts nothing new.
 - **Always a human**: a diff over `gate.max_diff_lines`, a changed dependency
   manifest, a touched path in `always_escalate_paths`, a path with a `CODEOWNERS`
-  owner, a directory outside `auto_merge.areas`, or a risk outside `auto_merge.risks`
+  owner (not the catch-all `*`), a directory outside `auto_merge.areas`, or a risk outside `auto_merge.risks`
   can't be auto-merged, whatever the approver says.
 - **Security backstop**: a diff that touches `force_security_paths` gets the
   security review even if intake didn't ask for it.
-- **Flaky checks** are retried (`gate.retries`) and reported as flaky.
+- **Flaky checks** are retried (`gate.retries`) and reported as flaky. A hung
+  `checks.sh` is killed after `gate.checks_timeout`.
+- **The gate tests the commit.** Uncommitted changes in the worktree, or checks
+  that edit tracked files, fail it; so does an uncommitted change after it passed.
 - **Merge conflicts** go back to the builder; they don't wait for you.
 - A PR you merge or close by hand ends its job. `job stale` lists jobs stuck in
   one stage.
